@@ -313,6 +313,58 @@ def test_confirm_survives_service_raising():
 
 
 # --------------------------------------------------------------------------
+# callback namespaces
+#
+# The trade flow owns `confirm:` / `cancel:` only. Every other prefix belongs
+# to a different feature (menu navigation), and routing it into the pending
+# trade lookup answers "this button expired" for a button that never was a
+# trade in the first place.
+# --------------------------------------------------------------------------
+
+
+def test_a_non_trade_callback_does_not_consume_the_pending_trade_lookup():
+    bot, api = _make_bot()
+    token = "tok-live"
+    bot._pending[token] = bot_module._Pending(
+        action="buy", market_ref="m", outcome="yes", confirm_args={"usd": 1.0, "confirm": True},
+        chat_id=OWNER_CHAT_ID, message_id=1, created_at=time.monotonic(),
+    )
+
+    # A menu tap arrives while a trade confirmation is outstanding.
+    bot._handle_callback(_callback(OWNER_CHAT_ID, 2, "nav:hot:0"))
+
+    assert token in bot._pending, "a menu tap consumed the outstanding trade confirmation"
+    # The visible symptom: the menu tap gets answered as a dead trade button.
+    said = " ".join(
+        [e["text"] for e in api.edits] + [a["text"] or "" for a in api.acks]
+    ).lower()
+    assert "no longer valid" not in said and "expired" not in said, (
+        f"a menu tap was answered as a stale trade confirmation: {said!r}"
+    )
+
+
+def test_an_unknown_callback_prefix_is_rejected_without_touching_pending():
+    bot, api = _make_bot()
+    token = "tok-live"
+    bot._pending[token] = bot_module._Pending(
+        action="buy", market_ref="m", outcome="yes", confirm_args={"usd": 1.0, "confirm": True},
+        chat_id=OWNER_CHAT_ID, message_id=1, created_at=time.monotonic(),
+    )
+
+    bot._handle_callback(_callback(OWNER_CHAT_ID, 2, "bogus:whatever"))
+
+    assert token in bot._pending
+    assert any("nrecognized" in (a["text"] or "") for a in api.acks)
+
+
+def test_an_unauthorized_menu_callback_is_ignored():
+    # The single-owner lock has to hold on every namespace, not just trades.
+    bot, api = _make_bot()
+    bot._handle_callback(_callback(STRANGER_CHAT_ID, 1, "nav:hot:0"))
+    assert api.sent == [] and api.edits == []
+
+
+# --------------------------------------------------------------------------
 # /rule
 # --------------------------------------------------------------------------
 

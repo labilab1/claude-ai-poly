@@ -41,6 +41,14 @@ from polymarket_bot.telegram.api import TelegramAPI, chunk_message, confirm_keyb
 
 _PENDING_TTL_SECONDS = 120
 
+# Callback prefixes owned by the trade confirm flow. Everything else is
+# navigation and must never be looked up in `_pending` - see `_handle_callback`.
+_TRADE_ACTIONS = frozenset({"confirm", "cancel"})
+
+# Navigation prefix, reserved here so the router knows it even before the menu
+# module is wired in.
+_NAV_ACTION = "nav"
+
 
 @dataclass
 class _Pending:
@@ -217,6 +225,15 @@ class TelegramBot:
             self._ack(callback_id, "Unrecognized action.")
             return
         action, token = data.split(":", 1)
+
+        # Namespaces are routed on the prefix, and ONLY the trade prefixes may
+        # touch `_pending`. Looking every callback up in the pending-trade map
+        # meant a menu button answered "this confirmation is no longer valid" -
+        # a dead trade button - for a tap that was never a trade.
+        if action not in _TRADE_ACTIONS:
+            self._handle_nav(callback_id, chat_id, message_id, action, token)
+            return
+
         pending = self._pending.pop(token, None)
 
         if pending is None:
@@ -260,6 +277,17 @@ class TelegramBot:
         except Exception as exc:
             text = f"Order failed unexpectedly: {type(exc).__name__}: {exc}"
         self._safe_edit(chat_id, message_id, with_disclaimer(text))
+
+    def _handle_nav(
+        self, callback_id: str | None, chat_id: int, message_id: int | None, action: str, token: str
+    ) -> None:
+        """Non-trade callbacks. Menu navigation lands here; anything else is
+        an unknown button and is reported as such rather than being silently
+        mistaken for a stale trade confirmation."""
+        if action != _NAV_ACTION:
+            self._ack(callback_id, "Unrecognized action.")
+            return
+        self._ack(callback_id)
 
     def _ack(self, callback_id: str | None, text: str | None = None) -> None:
         if not callback_id:
