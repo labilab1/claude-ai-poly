@@ -167,6 +167,8 @@ instead.
 | `rules` | Add / list / remove exit rules (local JSON) | local file only |
 | `monitor` | Evaluate rules against live prices | only with `--execute` |
 | `place_test_order` | Preview or place one order | only with `--execute` |
+| `redeem` | Claim every settled position | yes (cannot lose money) |
+| `cancel` | Cancel every resting order | yes (cannot lose money) |
 | `telegram_bot` | Chat front end over all of the above (see [Telegram bot](#telegram-bot)) | only after tapping Confirm |
 
 ### Diagnostics
@@ -243,16 +245,23 @@ python -m polymarket_bot.scripts.place_test_order --market <slug-or-0x> --side n
 `--side` accepts `yes` / `no` **or the market's own label** (`up`, `down`, …).
 `--all` and `--shares` are mutually exclusive and require `--sell`.
 
-Redeem and cancel have no script yet — call the service directly:
+Redeem and cancel have their own commands. Neither takes `--execute`: claiming
+a settled position cannot lose money, and cancelling only removes orders that
+never filled.
 
 ```powershell
-python -c "from polymarket_bot import service; print(service.redeem()['text'])"
-python -c "from polymarket_bot import service; print(service.cancel_orders()['text'])"
+# Claim every settled position
+python -m polymarket_bot.scripts.redeem
+
+# Cancel every resting order
+python -m polymarket_bot.scripts.cancel
 ```
 
 `redeem` claims settled positions. **A position that lost is redeemable and
 pays $0** — redeeming clears it from the list, it does not recover the loss.
-`cancel_orders` also kills any take-profit that was resting on the book.
+`cancel` also kills any take-profit that was resting on the book — the only
+exit that works while the bot is offline — so it warns before it acts. A
+partial cancel (an order still resting) exits 1, not 0.
 
 ### Exit rules (`rules`)
 
@@ -467,22 +476,39 @@ doesn't pay for a fresh auth handshake each time — that was the dominant cost.
 Updates are long-polled, which delivers close to instantly without needing a
 public HTTPS endpoint or TLS certificate.
 
-**Push alerts (not wired up yet):** implement `Notifier.send(message, *,
-level)` as a Telegram sender using `telegram/api.py`'s `send_message`, and pass
-it to `Monitor(...)`. `MultiNotifier` fans out to console and chat at once. Run
-`Monitor.run_forever()` in its own process — see
-[Running without a computer left on](#running-without-a-computer-left-on)
-below.
+**Push alerts:** with both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` set,
+`monitor` in continuous mode fans its events out to the console *and* that
+chat (`telegram/notifier.py`, via `MultiNotifier`):
+
+```powershell
+python -m polymarket_bot.scripts.monitor            # dry run, still pushes
+python -m polymarket_bot.scripts.monitor --execute   # live exits, pushes fills
+```
+
+The header line says `Alerts : console + Telegram` when it's on. Three details
+worth knowing:
+
+* **Only `trade` / `alert` / `error` are pushed.** A sweep runs every interval;
+  forwarding its routine chatter would train you to ignore the one message that
+  matters. The console keeps the full stream.
+* **It talks to Telegram directly.** The `telegram_bot` process does not need
+  to be running — this is an outbound HTTP call, not a message through the bot.
+* **A failed send is swallowed, never raised.** The monitor emits through the
+  notifier *while executing a sell*; a Telegram outage must not abandon an exit
+  half-done. The trade still happens; you just don't get the message.
+
+`--json` mode never pushes — that output is for scheduled or piped runs.
 
 ---
 
 ### Running without a computer left on
 
-Stop-loss and trailing-stop rules are enforced only while `monitor` (or the
-Telegram bot, once push alerts are wired in) is an actually-running process —
-see [Polymarket has no native stop orders](#polymarket-has-no-native-stop-orders).
-A laptop asleep is a monitor that isn't running. Options, roughly in order of
-how much they cost:
+Stop-loss and trailing-stop rules are enforced only while `monitor` is an
+actually-running process — see
+[Polymarket has no native stop orders](#polymarket-has-no-native-stop-orders).
+A laptop asleep is a monitor that isn't running, and push alerts do not change
+that: they tell you what a *running* monitor did, they do not enforce anything
+on their own. Options, roughly in order of how much they cost:
 
 | Option | Cost | True 24/7? | Notes |
 |---|---|---|---|
@@ -514,14 +540,9 @@ before putting its key on a server.
   (`get_trade_stats(limit=...)`).
 * **Single account, single machine.** No concurrency control beyond atomic file
   writes; two monitors against one data dir will fight.
-* **No standalone CLI for redeem/cancel** — both exist in `service.py` and are
-  reachable via the Telegram bot (`/redeem`, `/cancel`), but not as their own
-  `python -m polymarket_bot.scripts.*` command.
 
 ## Roadmap
 
-* Push alerts from `Monitor` into the Telegram bot (the router exists; the
-  `Notifier` wiring described above does not, yet).
 * Optionally mirror a `take_profit` rule as a real resting limit order so it
   survives the bot being offline.
 * Run the monitor (and the Telegram bot) as a service on whatever host was
