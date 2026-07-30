@@ -672,6 +672,9 @@ def arbitrage(
             ),
             opportunities=[],
             count=0,
+            # Always present, so a caller never has to tell "no opportunities"
+            # apart from "this key is missing on the empty branch".
+            tradable_count=0,
             priced=priced,
             fee_rate=fee,
             disclaimer=advisor.DISCLAIMER,
@@ -714,6 +717,90 @@ def arbitrage(
         tradable_count=len(tradable),
         priced=priced,
         fee_rate=fee,
+        disclaimer=advisor.DISCLAIMER,
+    )
+
+
+@_safe
+def maker_pairs(
+    *, scan_limit: int = 120, max_books: int = 30, client: SecureClient | None = None
+) -> dict:
+    """Markets where RESTING a bid on both sides would buy the $1 pair cheap.
+
+    The complement to `arbitrage`, and in practice the useful one. Measured
+    live: taker arb (paying both asks) essentially never exists - real pairs
+    price at 100.1c-102c. Maker pairs (paying both bids) exist on nearly every
+    liquid market, with a median gap around 1c.
+
+    That gap is not an oversight in the market. It is what a liquidity provider
+    is paid for taking on fill risk and adverse selection, and this function
+    reports it as such rather than as free money.
+    """
+    with _session(client) as (api, _settings):
+        markets = list_tradable_markets(
+            api, limit=max(1, int(scan_limit)), order="volume24hr", ascending=False
+        )
+        found, priced = arbitrage_mod.find_maker_pairs(
+            api, markets, max_books=max(1, int(max_books))
+        )
+
+    rows = [pair.to_dict() for pair in found]
+    if not found:
+        return _ok(
+            "maker_pairs",
+            f"No maker pairs found across {priced} priced market(s).",
+            pairs=[],
+            count=0,
+            priced=priced,
+            disclaimer=advisor.DISCLAIMER,
+        )
+
+    lines = [
+        f"MAKER PAIRS ({len(found)} of {priced} priced market(s))",
+        "",
+        "Post a BUY limit on both sides. If BOTH fill you hold a YES and a NO,",
+        "which redeem together for exactly $1.00 whatever happens.",
+        "",
+    ]
+    for index, pair in enumerate(found, start=1):
+        lines.append(f"{index}. {_clip(pair.question, 60)}")
+        lines.append(
+            f"   Bid YES {pair.yes_bid * 100:.1f}c + NO {pair.no_bid * 100:.1f}c "
+            f"= {pair.cost * 100:.1f}c -> redeems 100c"
+        )
+        lines.append(
+            f"   Edge {pair.edge * 100:.2f}c/pair ({pair.edge_pct:.2f}%), "
+            f"up to {pair.size_pairs:,.0f} pairs = {_usd(pair.max_profit)} if both fill"
+        )
+        if pair.pays_rewards:
+            # This is the MARKET'S daily pool, split across everyone providing
+            # liquidity in proportion to what they quote. Printing it as though
+            # it were an individual payout would be wildly misleading on an
+            # account this size.
+            lines.append(
+                f"   Rewards: this market shares ~{pair.daily_reward:g}/day among ALL "
+                f"liquidity providers; your cut is your share of the quoted size."
+            )
+        lines.append("")
+
+    lines.append(
+        "THIS IS MARKET MAKING, NOT FREE MONEY. A resting bid trades only when "
+        "someone crosses it, and it may never fill. If one leg fills and the "
+        "other does not, you are holding a naked directional position. The side "
+        "that fills first is disproportionately the side the market is moving "
+        "against you - that adverse selection is precisely why this gap exists "
+        "and why it is about this size. The bot will not place these for you; "
+        "use /buy with a limit price if you want to try one by hand."
+    )
+    lines.append(f"! {advisor.DISCLAIMER}")
+
+    return _ok(
+        "maker_pairs",
+        "\n".join(lines),
+        pairs=rows,
+        count=len(rows),
+        priced=priced,
+        rewarded_count=sum(1 for p in found if p.pays_rewards),
         disclaimer=advisor.DISCLAIMER,
     )
 

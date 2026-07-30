@@ -193,6 +193,64 @@ _STRINGS: Final[dict[str, dict[str, str]]] = {
             "   מקסימום {profit} לפני עמלות"
         ),
     },
+    # ---- maker pairs -----------------------------------------------------
+    "maker.title": {
+        "en": "🅜 Maker pairs: {count} of {scanned} markets",
+        "he": "🅜 זוגות למתווך: {count} מתוך {scanned} שווקים",
+    },
+    "maker.how": {
+        "en": (
+            "Post a BUY limit on both sides. If BOTH fill, the YES and NO "
+            "redeem together for exactly 100¢ whatever happens."
+        ),
+        "he": (
+            "הצב הזמנת קנייה בשני הצדדים. אם שתיהן מתמלאות, הכן והלא "
+            "נפדים יחד בדיוק ב-100 אגורות, לא משנה מה קורה."
+        ),
+    },
+    "maker.row": {
+        "en": (
+            "{n}. {question}\n"
+            "   Bid YES {yes}¢ + NO {no}¢ = {total}¢ → redeems 100¢\n"
+            "   Edge {edge}¢/pair, up to {size} pairs = {profit} if both fill"
+        ),
+        "he": (
+            "{n}. {question}\n"
+            "   הצע כן {yes}א + לא {no}א = {total}א ← נפדה ב-100א\n"
+            "   רווח {edge}א לזוג, עד {size} זוגות = {profit} אם שתיהן מתמלאות"
+        ),
+    },
+    # The rate is the MARKET'S daily pool shared among every liquidity
+    # provider, not an individual payout. Wording it as "pays you" would be
+    # wildly misleading on a small account.
+    "maker.rewards": {
+        "en": "💧 Market shares ~{rate}/day among ALL makers; your cut is your share of the size.",
+        "he": "💧 השוק מחלק ~{rate} ליום בין כל המתווכים; חלקך לפי חלקך בגודל.",
+    },
+    "maker.none": {
+        "en": "No maker pairs found across {scanned} markets.",
+        "he": "לא נמצאו זוגות למתווך ב-{scanned} שווקים.",
+    },
+    "maker.warning": {
+        "en": (
+            "THIS IS MARKET MAKING, NOT FREE MONEY.\n"
+            "A resting bid trades only when someone crosses it, and it may "
+            "never fill. If one leg fills and the other does not, you are "
+            "holding a naked directional position. The side that fills first "
+            "is disproportionately the side moving against you — that adverse "
+            "selection is exactly why this gap exists and why it is this size. "
+            "The bot will not place these; use /buy with a limit price to try "
+            "one by hand."
+        ),
+        "he": (
+            "זה עשיית שוק, לא כסף חינם.\n"
+            "הזמנה ממתינה מתבצעת רק כשמישהו חוצה אותה, וייתכן שלעולם לא "
+            "תתמלא. אם רגל אחת מתמלאת והשנייה לא, אתה מחזיק פוזיציה חשופה. "
+            "הצד שמתמלא ראשון הוא לרוב הצד שהשוק זז נגדו — הסלקציה הזו היא "
+            "בדיוק הסיבה שהפער קיים ושהוא בגודל הזה. הבוט לא יציב את אלה; "
+            "השתמש ב-/buy עם מחיר גבול כדי לנסות ידנית."
+        ),
+    },
     "arb.fees_kill": {
         "en": "Fees eat this one - not a trade.",
         "he": "העמלות אוכלות את זה - לא עסקה.",

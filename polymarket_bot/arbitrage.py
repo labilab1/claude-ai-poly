@@ -136,6 +136,27 @@ class ArbOpportunity:
         }
 
 
+def best_bid(book: object) -> tuple[float | None, float]:
+    """(price, shares) of the highest meaningful bid, or (None, 0).
+
+    Polymarket sorts bids ASCENDING, so the best (highest) bid is the LAST
+    element. Read by price rather than by position, like `best_ask`.
+    """
+    levels = getattr(book, "bids", None) or ()
+    usable = []
+    for level in levels:
+        try:
+            price = float(level.price)
+            size = float(level.size)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if size >= MIN_LEVEL_SHARES and 0.0 < price <= 1.0:
+            usable.append((price, size))
+    if not usable:
+        return (None, 0.0)
+    return max(usable, key=lambda pair: pair[0])
+
+
 def best_ask(book: object) -> tuple[float | None, float]:
     """(price, shares) of the cheapest meaningful ask, or (None, 0).
 
@@ -221,6 +242,164 @@ def evaluate_market(
         fee_rate=fee_rate,
         warnings=warnings,
     )
+
+
+@dataclass
+class MakerPair:
+    """A market where POSTING a bid on both sides would buy the $1 pair cheap.
+
+    This is not the same trade as `ArbOpportunity`, and the difference is the
+    whole point:
+
+      Taker arb  - you cross the spread and pay both ASKS. Instant and certain
+                   if it exists, which (measured live) it essentially never
+                   does: real pairs price at 100.1c-102c, never below 100c.
+      Maker pair - you REST a bid on each side and pay both BIDS. Measured
+                   live, this is under 100c on essentially every liquid market,
+                   with a median gap around 1c.
+
+    So this one is common and the other is not. The reason is not that the
+    venue is leaving money out: the gap IS the market maker's compensation, and
+    you only collect it by taking on what makers take on.
+
+      * **Fills are not guaranteed.** A resting bid trades only when someone
+        crosses it. One leg filling and the other not leaves you holding a
+        naked directional position - the same leg risk as taker arb, except
+        here it is the normal case rather than the unlucky one.
+      * **Adverse selection.** The side that fills first is disproportionately
+        the side the market is moving against. That is precisely why the gap
+        exists and why it is roughly this size.
+      * **It takes time.** A resting order is not a trade.
+
+    What genuinely tilts it: reward-eligible markets pay liquidity providers
+    for resting near the midpoint, so `daily_reward` is carried here. That
+    return is real and arrives whether or not the pair ever completes.
+    """
+
+    condition_id: str
+    slug: str
+    question: str
+    url: str | None
+    yes_bid: float
+    no_bid: float
+    size_pairs: float
+    daily_reward: float = 0.0
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def cost(self) -> float:
+        return round(self.yes_bid + self.no_bid, 6)
+
+    @property
+    def edge(self) -> float:
+        """Profit per pair if - and only if - both legs fill."""
+        return round(PAIR_PAYOUT - self.cost, 6)
+
+    @property
+    def edge_pct(self) -> float:
+        return round((self.edge / self.cost) * 100, 3) if self.cost else 0.0
+
+    @property
+    def max_profit(self) -> float:
+        return round(self.edge * self.size_pairs, 6)
+
+    @property
+    def pays_rewards(self) -> bool:
+        return self.daily_reward > 0
+
+    def to_dict(self) -> dict:
+        return {
+            "condition_id": self.condition_id,
+            "slug": self.slug,
+            "question": self.question,
+            "url": self.url,
+            "yes_bid": self.yes_bid,
+            "no_bid": self.no_bid,
+            "cost": self.cost,
+            "edge": self.edge,
+            "edge_pct": self.edge_pct,
+            "size_pairs": self.size_pairs,
+            "max_profit": self.max_profit,
+            "daily_reward": self.daily_reward,
+            "pays_rewards": self.pays_rewards,
+            "warnings": list(self.warnings),
+        }
+
+
+def evaluate_maker_pair(client: SecureClient, market: object) -> MakerPair | None:
+    """Price one market's YES/NO pair at the BIDS - what a maker would pay."""
+    yes = market.outcomes.yes
+    no = market.outcomes.no
+    if not (yes.token_id and no.token_id):
+        return None
+    if not is_tradable(market):
+        return None
+
+    try:
+        yes_book = client.get_order_book(token_id=str(yes.token_id))
+        no_book = client.get_order_book(token_id=str(no.token_id))
+    except Exception:
+        return None
+
+    yes_bid, yes_size = best_bid(yes_book)
+    no_bid, no_size = best_bid(no_book)
+    if yes_bid is None or no_bid is None:
+        return None
+
+    if PAIR_PAYOUT - (yes_bid + no_bid) < MIN_EDGE:
+        return None
+
+    size = min(yes_size, no_size)
+    if size < MIN_LEVEL_SHARES:
+        return None
+
+    warnings = [
+        "Both legs must fill, and a resting bid may never fill at all. "
+        "One side filling alone leaves you holding a naked position."
+    ]
+    if yes_size != no_size:
+        warnings.append(
+            f"Depth is uneven ({yes_size:,.0f} YES vs {no_size:,.0f} NO at the touch)."
+        )
+
+    try:
+        from polymarket_bot.markets import daily_reward_rate
+
+        reward = daily_reward_rate(market)
+    except Exception:
+        reward = 0.0
+
+    return MakerPair(
+        condition_id=str(getattr(market, "condition_id", "") or ""),
+        slug=str(getattr(market, "slug", "") or ""),
+        question=str(getattr(market, "question", "") or getattr(market, "slug", "") or ""),
+        url=market_url(market),
+        yes_bid=round(yes_bid, 6),
+        no_bid=round(no_bid, 6),
+        size_pairs=round(size, 2),
+        daily_reward=reward,
+        warnings=warnings,
+    )
+
+
+def find_maker_pairs(
+    client: SecureClient, markets: list, *, max_books: int = 40
+) -> tuple[list[MakerPair], int]:
+    """Scan for pairs whose BIDS sum under $1. Returns (pairs, markets_priced).
+
+    Ranked by edge, then by whether the market pays liquidity rewards - a
+    reward-paying market returns something while you wait, which is exactly
+    what this trade is short of.
+    """
+    found: list[MakerPair] = []
+    priced = 0
+    for market in itertools.islice(iter(markets), max_books):
+        priced += 1
+        pair = evaluate_maker_pair(client, market)
+        if pair is not None:
+            found.append(pair)
+    found.sort(key=lambda p: (p.edge, p.daily_reward), reverse=True)
+    return (found, priced)
 
 
 def _prefilter(market: object) -> bool:

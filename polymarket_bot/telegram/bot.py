@@ -460,7 +460,11 @@ class TelegramBot:
         found = result.get("opportunities") or []
         priced = result.get("priced", 0)
         if not found:
+            # Taker arb essentially never exists on this venue, so stopping
+            # here would make the button look broken. The maker scan below is
+            # the one that actually finds something.
             self._send(chat_id, t("arb.none", lang, scanned=priced), session)
+            self._show_maker_pairs(chat_id, session)
             return
 
         lines = [t("arb.found", lang, count=len(found), scanned=priced), ""]
@@ -484,6 +488,51 @@ class TelegramBot:
                 lines.append(f"   ⚠️ {t('arb.fees_kill', lang)}")
             lines.append("")
         lines.append(t("arb.warning", lang))
+        self._send(chat_id, "\n".join(lines), session)
+        self._show_maker_pairs(chat_id, session)
+
+    def _show_maker_pairs(self, chat_id: int, session: menu_mod.MenuSession) -> None:
+        """The maker side: pairs whose BIDS sum under $1.
+
+        Kept in the same screen as the taker scan because they answer the same
+        question from opposite sides of the book, and because the taker scan
+        alone almost always finds nothing.
+        """
+        lang = session.lang
+        result = service.maker_pairs(client=self.client)
+        if not result.get("ok"):
+            self._send(chat_id, t("msg.error", lang, error=str(result.get("error"))), session)
+            return
+
+        pairs = result.get("pairs") or []
+        if not pairs:
+            self._send(chat_id, t("maker.none", lang, scanned=result.get("priced", 0)), session)
+            return
+
+        lines = [
+            t("maker.title", lang, count=len(pairs), scanned=result.get("priced", 0)),
+            t("maker.how", lang),
+            "",
+        ]
+        for index, row in enumerate(pairs[:8], start=1):
+            lines.append(
+                t(
+                    "maker.row",
+                    lang,
+                    n=index,
+                    question=row["question"][:70],
+                    yes=f"{row['yes_bid'] * 100:.1f}",
+                    no=f"{row['no_bid'] * 100:.1f}",
+                    total=f"{row['cost'] * 100:.1f}",
+                    edge=f"{row['edge'] * 100:.2f}",
+                    size=f"{row['size_pairs']:,.0f}",
+                    profit=f"${row['max_profit']:,.2f}",
+                )
+            )
+            if row.get("pays_rewards"):
+                lines.append("   " + t("maker.rewards", lang, rate=f"{row['daily_reward']:g}"))
+            lines.append("")
+        lines.append(t("maker.warning", lang))
         self._send(chat_id, "\n".join(lines), session)
 
     def _toggle_watch(self, chat_id: int, session: menu_mod.MenuSession, token: str) -> None:
