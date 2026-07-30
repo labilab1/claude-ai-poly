@@ -56,6 +56,9 @@ VIEW_PORTFOLIO = "pf"
 VIEW_MORE = "more"
 VIEW_LANG = "lang"
 VIEW_BUY = "buy"
+VIEW_ARB = "arb"
+VIEW_WATCH = "watch"
+VIEW_WATCHLIST = "wl"
 
 # What the bot is waiting for the next plain text message to be.
 AWAIT_SEARCH = "search"
@@ -78,6 +81,12 @@ class MenuSession:
     #: Market ref and outcome a pending buy prompt refers to.
     pending_market: str | None = None
     pending_outcome: str | None = None
+    #: Whether this process has painted the reply keyboard for this chat yet.
+    #: Telegram keeps a reply keyboard until it is replaced, but deleting the
+    #: chat clears it - and the bot cannot see that happen. Painting it once
+    #: per session restores it after a delete or a restart without re-sending
+    #: it on every single screen.
+    keyboard_sent: bool = False
     touched_at: float = field(default_factory=time.monotonic)
 
     def touch(self) -> None:
@@ -204,19 +213,51 @@ def reply_labels(lang: str) -> dict[str, str]:
     return mapping
 
 
+#: Longest market-button label. Telegram will render more, but a button wider
+#: than the screen wraps and the row stops being scannable.
+BUTTON_LABEL_WIDTH = 34
+
+
+def button_label(number: int, question: str) -> str:
+    """`3 · Will the Fed cut rates…` - a button that names its own row.
+
+    Five buttons all reading "Details" is the reported defect: the column gave
+    no way to tell which market a button opened. Leading with the row number
+    ties the button to the numbered text above it, and the truncated question
+    makes it readable on its own.
+    """
+    title = " ".join((question or "").split())  # collapse newlines/runs
+    prefix = f"{number} · "
+    room = BUTTON_LABEL_WIDTH - len(prefix)
+    if len(title) > room:
+        title = title[: max(room - 1, 1)].rstrip() + "…"
+    return f"{prefix}{title}" if title else str(number)
+
+
 def market_rows_keyboard(
-    entries: list[tuple[str, str | None]], *, lang: str, page: int, pages: int, view: str
+    entries: list[tuple[str, str | None, int, str]],
+    *,
+    lang: str,
+    page: int,
+    pages: int,
+    view: str,
 ) -> dict:
     """Inline keyboard for a list page.
 
-    `entries` is (token, url) per row, in the order the rows were rendered.
-    A row with no URL simply gets no link button rather than a dead one.
+    `entries` is (token, url, row_number, question) in rendered order. Each
+    market gets a button naming it, plus a link button when the market has a
+    URL - a row with no URL simply gets no link rather than a dead one.
     """
     rows: list[list[dict]] = []
-    for token, url in entries:
-        row = [{"text": t("btn.details", lang), "callback_data": nav(VIEW_MARKET, token)}]
+    for token, url, number, question in entries:
+        row = [
+            {
+                "text": button_label(number, question),
+                "callback_data": nav(VIEW_MARKET, token),
+            }
+        ]
         if url:
-            row.append({"text": t("btn.link", lang), "url": url})
+            row.append({"text": t("btn.link_short", lang), "url": url})
         rows.append(row)
 
     if pages > 1:
@@ -238,13 +279,51 @@ def market_rows_keyboard(
     return {"inline_keyboard": rows}
 
 
-def market_keyboard(token: str, url: str | None, *, lang: str, back_view: str) -> dict:
-    """Detail screen: buy either side, open on Polymarket, go back."""
+def _side_label(key: str, lang: str, price: float | None) -> str:
+    """`Buy YES · 44¢` - the button states what it would cost.
+
+    Without the price the two buy buttons are interchangeable-looking and the
+    owner has to scroll back into the text to remember which side is which.
+    """
+    base = t(key, lang)
+    if price is None:
+        return base
+    return f"{base} · {round(price * 100)}¢"
+
+
+def market_keyboard(
+    token: str,
+    url: str | None,
+    *,
+    lang: str,
+    back_view: str,
+    yes_price: float | None = None,
+    no_price: float | None = None,
+    watching: bool = False,
+) -> dict:
+    """Detail screen: buy either side, watch, open on Polymarket, go back.
+
+    One action per row below the buy pair, each labelled with what it does
+    rather than an icon alone - the reported problem with the first version was
+    that a column of unlabelled buttons gave no clue what any of them did.
+    """
     rows: list[list[dict]] = [
         [
-            {"text": t("btn.buy_yes", lang), "callback_data": nav(VIEW_BUY, f"y{token}")},
-            {"text": t("btn.buy_no", lang), "callback_data": nav(VIEW_BUY, f"n{token}")},
-        ]
+            {
+                "text": _side_label("btn.buy_yes", lang, yes_price),
+                "callback_data": nav(VIEW_BUY, f"y{token}"),
+            },
+            {
+                "text": _side_label("btn.buy_no", lang, no_price),
+                "callback_data": nav(VIEW_BUY, f"n{token}"),
+            },
+        ],
+        [
+            {
+                "text": t("btn.unwatch" if watching else "btn.watch", lang),
+                "callback_data": nav(VIEW_WATCH, token),
+            }
+        ],
     ]
     if url:
         rows.append([{"text": t("btn.link", lang), "url": url}])
@@ -252,21 +331,56 @@ def market_keyboard(token: str, url: str | None, *, lang: str, back_view: str) -
     return {"inline_keyboard": rows}
 
 
-def more_keyboard(lang: str) -> dict:
+def confirm_action_keyboard(action: str, *, lang: str) -> dict:
+    """Yes/No for a More-menu action that cannot be undone.
+
+    The confirmed payload is the action with a "!" suffix, so the plain form
+    can never execute - reaching the action requires the second tap by
+    construction rather than by a flag someone can forget to check.
+    """
     return {
         "inline_keyboard": [
             [
+                {
+                    "text": t("btn.confirm_yes", lang),
+                    "callback_data": nav(VIEW_MORE, f"{action}!"),
+                },
+                {"text": t("btn.confirm_no", lang), "callback_data": nav(VIEW_MORE, "")},
+            ]
+        ]
+    }
+
+
+def more_keyboard(lang: str) -> dict:
+    """The More screen.
+
+    Grouped by what an action DOES, because the first version was an
+    undifferentiated grid of buttons: things that only read, then things that
+    move money, then settings. The two money-moving actions sit on their own
+    row so neither is a neighbour of a harmless one.
+    """
+    return {
+        "inline_keyboard": [
+            # Find things.
+            [
+                {"text": t("btn.arb", lang), "callback_data": nav(VIEW_ARB, "")},
+                {"text": t("btn.watchlist", lang), "callback_data": nav(VIEW_WATCHLIST, "")},
+            ],
+            # Read things.
+            [
                 {"text": t("btn.status", lang), "callback_data": nav(VIEW_MORE, "status")},
-                {"text": t("btn.rules", lang), "callback_data": nav(VIEW_MORE, "rules")},
+                {"text": t("btn.analyze", lang), "callback_data": nav(VIEW_MORE, "analyze")},
             ],
             [
-                {"text": t("btn.analyze", lang), "callback_data": nav(VIEW_MORE, "analyze")},
+                {"text": t("btn.rules", lang), "callback_data": nav(VIEW_MORE, "rules")},
                 {"text": t("btn.monitor", lang), "callback_data": nav(VIEW_MORE, "monitor")},
             ],
+            # Move money. Kept apart from the read-only rows above.
             [
                 {"text": t("btn.redeem", lang), "callback_data": nav(VIEW_MORE, "redeem")},
                 {"text": t("btn.cancel_orders", lang), "callback_data": nav(VIEW_MORE, "cancel")},
             ],
+            # Settings.
             [{"text": t("btn.language", lang), "callback_data": nav(VIEW_LANG, "")}],
         ]
     }

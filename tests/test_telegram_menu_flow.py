@@ -181,7 +181,8 @@ def test_search_prompts_then_uses_the_typed_keyword(bot_and_api):
     with mock.patch.object(bot_module.service, "scan", return_value=_scan_result(count=2)) as spy:
         bot._handle_update(_msg("bitcoin"))
     assert spy.call_args.kwargs["keyword"] == "bitcoin"
-    assert "Results for bitcoin" in api.all_text()
+    assert "bitcoin" in api.all_text()
+    assert "2 results" in api.all_text()
 
 
 def test_a_keyboard_tap_cancels_an_outstanding_prompt(bot_and_api):

@@ -45,10 +45,15 @@ _STRINGS: Final[dict[str, dict[str, str]]] = {
     "menu.more": {"en": "⚙️ More", "he": "⚙️ עוד"},
     # ---- screen titles ---------------------------------------------------
     "title.hot": {"en": "🔥 Hot markets", "he": "🔥 שווקים חמים"},
-    "title.search": {"en": "🔍 Results for {query}", "he": "🔍 תוצאות עבור {query}"},
+    "title.search": {
+        "en": "🔍 {count} results for “{query}”",
+        "he": "🔍 {count} תוצאות עבור “{query}”",
+    },
     "title.portfolio": {"en": "💼 Portfolio", "he": "💼 תיק"},
     "title.more": {"en": "⚙️ More", "he": "⚙️ עוד"},
     "title.market": {"en": "📊 Market", "he": "📊 שוק"},
+    "title.watchlist": {"en": "⭐ Watchlist", "he": "⭐ רשימת מעקב"},
+    "title.arb": {"en": "⚖️ Arbitrage scan", "he": "⚖️ סריקת ארביטראז'"},
     # ---- market rows -----------------------------------------------------
     "row.yes": {"en": "YES {pct}%", "he": "כן {pct}%"},
     "row.spread": {"en": "spread {cents}c", "he": "מרווח {cents}ס"},
@@ -59,7 +64,13 @@ _STRINGS: Final[dict[str, dict[str, str]]] = {
     "row.unknown": {"en": "?", "he": "?"},
     # ---- buttons ---------------------------------------------------------
     "btn.details": {"en": "📊 Details", "he": "📊 פרטים"},
-    "btn.link": {"en": "🔗 Polymarket", "he": "🔗 פולימרקט"},
+    "btn.link": {"en": "🔗 Open on Polymarket", "he": "🔗 פתח בפולימרקט"},
+    # Sits beside a market button, where the row already names the market.
+    "btn.link_short": {"en": "🔗", "he": "🔗"},
+    "btn.watch": {"en": "⭐ Watch this market", "he": "⭐ עקוב אחרי השוק"},
+    "btn.unwatch": {"en": "★ Stop watching", "he": "★ הפסק לעקוב"},
+    "btn.watchlist": {"en": "⭐ Watchlist", "he": "⭐ מעקב"},
+    "btn.arb": {"en": "⚖️ Arbitrage scan", "he": "⚖️ סריקת ארביטראז'"},
     "btn.prev": {"en": "◀ Prev", "he": "◀ הקודם"},
     "btn.next": {"en": "Next ▶", "he": "הבא ▶"},
     "btn.back": {"en": "◀ Back", "he": "◀ חזרה"},
@@ -74,6 +85,21 @@ _STRINGS: Final[dict[str, dict[str, str]]] = {
     "btn.redeem": {"en": "💰 Redeem", "he": "💰 פדיון"},
     "btn.cancel_orders": {"en": "🚫 Cancel orders", "he": "🚫 בטל הזמנות"},
     "btn.help": {"en": "❓ Help", "he": "❓ עזרה"},
+    "btn.confirm_yes": {"en": "✅ Yes, do it", "he": "✅ כן, בצע"},
+    "btn.confirm_no": {"en": "✖ No, go back", "he": "✖ לא, חזור"},
+    # ---- confirmations for irreversible actions --------------------------
+    "confirm.cancel": {
+        "en": (
+            "Cancel every resting order?\n\n"
+            "This also removes any take-profit sitting on the book - the only "
+            "exit that keeps working while the bot is offline. It cannot be undone."
+        ),
+        "he": (
+            "לבטל את כל ההזמנות הפתוחות?\n\n"
+            "זה גם מוחק כל take-profit שיושב בספר - היחיד שממשיך לעבוד "
+            "כשהבוט כבוי. אי אפשר לבטל את הפעולה."
+        ),
+    },
     # ---- pagination / lists ---------------------------------------------
     "list.page": {"en": "page {page}/{pages}", "he": "עמוד {page}/{pages}"},
     "list.empty": {
@@ -118,6 +144,74 @@ _STRINGS: Final[dict[str, dict[str, str]]] = {
     "msg.hot_note": {
         "en": "Sorted by 24h volume - how much money moved, not how likely it is to pay.",
         "he": "ממוין לפי מחזור 24 שעות - כמה כסף עבר, לא כמה סביר שירוויח.",
+    },
+    # ---- watchlist -------------------------------------------------------
+    "msg.watch_added": {
+        "en": "⭐ Added to your watchlist.",
+        "he": "⭐ נוסף לרשימת המעקב.",
+    },
+    "msg.watch_removed": {
+        "en": "Removed from your watchlist.",
+        "he": "הוסר מרשימת המעקב.",
+    },
+    "msg.watchlist_empty": {
+        "en": "Your watchlist is empty. Open a market and tap ⭐ to add it.",
+        "he": "רשימת המעקב ריקה. פתח שוק ולחץ ⭐ כדי להוסיף אותו.",
+    },
+    # ---- arbitrage -------------------------------------------------------
+    "arb.scanning": {
+        "en": "Scanning order books for arbitrage. This takes a moment...",
+        "he": "סורק ספרי פקודות אחרי ארביטראז'. זה לוקח רגע...",
+    },
+    "arb.none": {
+        "en": (
+            "No arbitrage found in {scanned} markets.\n\n"
+            "That is the normal result. These gaps are what market makers exist "
+            "to close, and they close in seconds."
+        ),
+        "he": (
+            "לא נמצא ארביטראז' ב-{scanned} שווקים.\n\n"
+            "זו התוצאה הרגילה. הפערים האלה הם בדיוק מה שעושי שוק סוגרים, "
+            "והם נסגרים תוך שניות."
+        ),
+    },
+    "arb.found": {
+        "en": "Found {count} possible arbitrage(s) in {scanned} markets:",
+        "he": "נמצאו {count} הזדמנויות ארביטראז' אפשריות מתוך {scanned} שווקים:",
+    },
+    "arb.row": {
+        "en": (
+            "{n}. {question}\n"
+            "   Buy YES {yes}¢ + NO {no}¢ = {total}¢ → pays 100¢\n"
+            "   Edge {edge}¢ per pair ({pct}%) on up to {size} pairs\n"
+            "   Best case {profit} before fees"
+        ),
+        "he": (
+            "{n}. {question}\n"
+            "   קנה כן {yes}א + לא {no}א = {total}א ← משלם 100א\n"
+            "   רווח {edge}א לזוג ({pct}%) עד {size} זוגות\n"
+            "   מקסימום {profit} לפני עמלות"
+        ),
+    },
+    "arb.fees_kill": {
+        "en": "Fees eat this one - not a trade.",
+        "he": "העמלות אוכלות את זה - לא עסקה.",
+    },
+    "arb.warning": {
+        "en": (
+            "READ THIS FIRST. Both legs must fill; if one fills and the other "
+            "moves you are left holding a naked position. Taker fees on some "
+            "markets reach 5%, which is larger than every edge above. The sizes "
+            "shown are what rests on the book right now and will not be there "
+            "when you tap. This is a report, not a recommendation - the bot will "
+            "not execute these for you."
+        ),
+        "he": (
+            "קרא את זה קודם. שתי הרגליים חייבות להתמלא; אם אחת מתמלאת והשנייה זזה, "
+            "נשארת עם פוזיציה חשופה. עמלות בחלק מהשווקים מגיעות ל-5%, יותר מכל "
+            "הרווח שלמעלה. הגדלים שמוצגים הם מה שיושב בספר עכשיו ולא יהיה שם "
+            "כשתלחץ. זה דוח, לא המלצה - הבוט לא יבצע את זה עבורך."
+        ),
     },
 }
 

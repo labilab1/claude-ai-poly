@@ -73,7 +73,10 @@ def test_a_raw_slug_would_not_have_fit_which_is_why_tokens_exist():
 
 def test_every_generated_keyboard_payload_is_within_the_limit():
     session = MenuSession()
-    entries = [(session.remember(f"{LONG_SLUG}-{i}"), "https://polymarket.com/x") for i in range(5)]
+    entries = [
+        (session.remember(f"{LONG_SLUG}-{i}"), "https://polymarket.com/x", i + 1, f"Market {i}")
+        for i in range(5)
+    ]
     keyboards = [
         market_rows_keyboard(entries, lang="he", page=1, pages=9, view=menu.VIEW_HOT),
         market_keyboard(entries[0][0], "https://polymarket.com/x", lang="he", back_view=menu.VIEW_HOT),
@@ -166,25 +169,25 @@ def test_reply_labels_accept_both_languages():
 
 
 def test_a_row_without_a_url_gets_no_link_button():
-    keyboard = market_rows_keyboard([("tok", None)], lang="en", page=0, pages=1, view=menu.VIEW_HOT)
+    keyboard = market_rows_keyboard([("tok", None, 1, "A market")], lang="en", page=0, pages=1, view=menu.VIEW_HOT)
     buttons = keyboard["inline_keyboard"][0]
     assert len(buttons) == 1 and "url" not in buttons[0]
 
 
 def test_pagination_row_is_absent_on_a_single_page():
-    keyboard = market_rows_keyboard([("tok", None)], lang="en", page=0, pages=1, view=menu.VIEW_HOT)
+    keyboard = market_rows_keyboard([("tok", None, 1, "A market")], lang="en", page=0, pages=1, view=menu.VIEW_HOT)
     assert len(keyboard["inline_keyboard"]) == 1
 
 
 def test_first_page_has_next_but_no_prev():
-    keyboard = market_rows_keyboard([("tok", None)], lang="en", page=0, pages=3, view=menu.VIEW_HOT)
+    keyboard = market_rows_keyboard([("tok", None, 1, "A market")], lang="en", page=0, pages=3, view=menu.VIEW_HOT)
     texts = [b["text"] for b in keyboard["inline_keyboard"][-1]]
     assert not any("Prev" in x for x in texts)
     assert any("Next" in x for x in texts)
 
 
 def test_last_page_has_prev_but_no_next():
-    keyboard = market_rows_keyboard([("tok", None)], lang="en", page=2, pages=3, view=menu.VIEW_HOT)
+    keyboard = market_rows_keyboard([("tok", None, 1, "A market")], lang="en", page=2, pages=3, view=menu.VIEW_HOT)
     texts = [b["text"] for b in keyboard["inline_keyboard"][-1]]
     assert any("Prev" in x for x in texts)
     assert not any("Next" in x for x in texts)

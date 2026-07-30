@@ -50,6 +50,7 @@ from typing import Any, ParamSpec
 from polymarket import Market, SecureClient
 
 from polymarket_bot import advisor, portfolio, trading
+from polymarket_bot import arbitrage as arbitrage_mod
 from polymarket_bot.analytics import find_opportunities, get_insights, get_trade_stats
 from polymarket_bot.client import get_client
 from polymarket_bot.config import Settings, load_settings
@@ -618,6 +619,101 @@ def briefing(market_ref: str, *, client: SecureClient | None = None) -> dict:
         book=_snapshot_dict(snapshot),
         accepting_orders=is_tradable(market),
         url=market_url(market),
+        # Prices are surfaced separately so a caller can label a button with
+        # what a side costs instead of asking the reader to parse the prose.
+        yes_price=_num(market.outcomes.yes.price),
+        no_price=_num(market.outcomes.no.price),
+        yes_label=market.outcomes.yes.label,
+        no_label=market.outcomes.no.label,
+        disclaimer=advisor.DISCLAIMER,
+    )
+
+
+@_safe
+def arbitrage(
+    *,
+    scan_limit: int = 120,
+    max_books: int = 40,
+    fee_rate: float | None = None,
+    client: SecureClient | None = None,
+) -> dict:
+    """Look for binary markets whose YES and NO asks sum to under $1.
+
+    A YES and a NO of the same market always redeem for exactly $1 together, so
+    buying both for less is profit that does not depend on the outcome. This
+    prices candidates from the real order book - gamma quotes are mid/last and
+    an "edge" computed from them does not exist.
+
+    Read-only, and it stays that way. The report never becomes an order: both
+    legs must fill for the profit to be real, Polymarket has no atomic two-leg
+    order, and a half-filled arb is a naked position at a price nobody chose.
+    """
+    fee = arbitrage_mod.DEFAULT_TAKER_FEE if fee_rate is None else float(fee_rate)
+    with _session(client) as (api, _settings):
+        # Volume-ordered: an edge on a market with no size behind it is not
+        # money, and the thin side caps every one of these trades.
+        markets = list_tradable_markets(
+            api, limit=max(1, int(scan_limit)), order="volume24hr", ascending=False
+        )
+        found, priced = arbitrage_mod.find_arbitrage(
+            api, markets, fee_rate=fee, max_books=max(1, int(max_books))
+        )
+
+    rows = [opportunity.to_dict() for opportunity in found]
+    tradable = [o for o in found if o.survives_fees]
+
+    if not found:
+        return _ok(
+            "arbitrage",
+            (
+                f"No arbitrage found across {priced} priced market(s).\n"
+                "That is the normal result - these gaps are exactly what market "
+                "makers exist to close, and they close in seconds."
+            ),
+            opportunities=[],
+            count=0,
+            priced=priced,
+            fee_rate=fee,
+            disclaimer=advisor.DISCLAIMER,
+        )
+
+    lines = [f"POSSIBLE ARBITRAGE ({len(found)} of {priced} priced market(s))", ""]
+    for index, opportunity in enumerate(found, start=1):
+        lines.append(f"{index}. {_clip(opportunity.question, 60)}")
+        lines.append(
+            f"   BUY YES {opportunity.yes_price * 100:.1f}c + NO {opportunity.no_price * 100:.1f}c "
+            f"= {opportunity.cost * 100:.1f}c -> redeems 100c"
+        )
+        lines.append(
+            f"   Edge {opportunity.gross_edge * 100:.2f}c/pair ({opportunity.edge_pct:.2f}%), "
+            f"up to {opportunity.size_pairs:,.0f} pairs = {_usd(opportunity.gross_profit)} gross"
+        )
+        lines.append(
+            f"   After an assumed {fee * 100:.1f}% taker fee: "
+            f"{_usd(opportunity.net_profit)} "
+            + ("(still positive)" if opportunity.survives_fees else "(FEES EAT THIS - not a trade)")
+        )
+        for warning in opportunity.warnings:
+            lines.append(f"   ! {warning}")
+        lines.append("")
+
+    lines.append(
+        "BEFORE YOU ACT: both legs must fill. There is no atomic two-leg order "
+        "on Polymarket, so if one fills and the price moves you are holding a "
+        "naked position. The sizes above are resting right now and will not be "
+        "there when you get to them. Fees on some markets reach 5%, which is "
+        "more than every edge here. This bot will not execute these for you."
+    )
+    lines.append(f"! {advisor.DISCLAIMER}")
+
+    return _ok(
+        "arbitrage",
+        "\n".join(lines),
+        opportunities=rows,
+        count=len(rows),
+        tradable_count=len(tradable),
+        priced=priced,
+        fee_rate=fee,
         disclaimer=advisor.DISCLAIMER,
     )
 

@@ -27,6 +27,7 @@ public HTTPS endpoint.
 
 from __future__ import annotations
 
+import math
 import time
 import uuid
 from dataclasses import dataclass
@@ -40,6 +41,7 @@ from polymarket_bot.scripts._common import with_disclaimer
 from polymarket_bot.telegram import menu as menu_mod
 from polymarket_bot.telegram.api import TelegramAPI, chunk_message, confirm_keyboard
 from polymarket_bot.telegram.i18n import load_lang, save_lang, t, toggled
+from polymarket_bot.telegram.watchlist import Watchlist
 
 _PENDING_TTL_SECONDS = 120
 
@@ -96,6 +98,7 @@ class TelegramBot:
         self._pending: dict[str, _Pending] = {}
         self._running = False
         self._sessions = menu_mod.SessionStore()
+        self._watchlist = Watchlist(settings)
         # Persistent-keyboard buttons arrive as plain text, so the router
         # recognises them by label - in either language, since a toggle does
         # not repaint a keyboard already sitting on someone's screen.
@@ -243,7 +246,24 @@ class TelegramBot:
 
     def _send(self, chat_id: int, text: str, session: menu_mod.MenuSession) -> int | None:
         """Send with the persistent keyboard attached."""
+        session.keyboard_sent = True
         return self._reply(chat_id, menu_mod.persistent_keyboard(session.lang), text)
+
+    def _ensure_keyboard(self, chat_id: int, session: menu_mod.MenuSession) -> None:
+        """Paint the reply keyboard once per session.
+
+        Telegram keeps a reply keyboard until it is replaced - but deleting the
+        chat clears it, and the bot has no way to observe that. A screen whose
+        message carries an inline keyboard cannot also carry the reply keyboard
+        (one markup per message), so without this a user who deleted the chat
+        and tapped an old button got a working screen and no menu.
+
+        Once per session, not per screen: re-sending it on every tap adds a
+        message to the chat each time.
+        """
+        if session.keyboard_sent:
+            return
+        self._send(chat_id, t("msg.welcome", session.lang), session)
 
     def _handle_command(self, message: dict, text: str) -> None:
         chat = message.get("chat") or {}
@@ -387,9 +407,17 @@ class TelegramBot:
         persistent keyboard attached, so the menu is never lost."""
         session.view = view
         if view == menu_mod.VIEW_HOT:
+            # Hot is unfiltered by definition. Leaving a previous search in
+            # place made Hot silently return that search, titled with the old
+            # keyword - the single most confusing thing the menu did.
+            session.query = None
             self._show_list(chat_id, session, sort="hot", page=_int(arg))
         elif view == menu_mod.VIEW_SEARCH:
-            if not session.query:
+            # An empty arg means the keyboard button was tapped: always ask for
+            # a keyword, even when one is already stored, or a second search is
+            # impossible. A numeric arg is pagination and keeps the query.
+            if arg == "" or not session.query:
+                session.query = None
                 session.awaiting = menu_mod.AWAIT_SEARCH
                 self._send(chat_id, t("prompt.search", session.lang), session)
             else:
@@ -403,13 +431,111 @@ class TelegramBot:
             self._send(chat_id, str(result.get("text") or ""), session)
         elif view == menu_mod.VIEW_LANG:
             self._toggle_language(chat_id, session)
+        elif view == menu_mod.VIEW_ARB:
+            self._show_arbitrage(chat_id, session)
+        elif view == menu_mod.VIEW_WATCH:
+            self._toggle_watch(chat_id, session, arg)
+        elif view == menu_mod.VIEW_WATCHLIST:
+            self._show_watchlist(chat_id, session)
         elif view == menu_mod.VIEW_MORE:
             self._show_more(chat_id, session, arg)
         else:
             self._send(chat_id, t("msg.welcome", session.lang), session)
 
+    def _show_arbitrage(self, chat_id: int, session: menu_mod.MenuSession) -> None:
+        """Scan for YES+NO pairs priced under the $1 they redeem for.
+
+        Slow by nature (two order-book reads per candidate), so the owner is
+        told it started before the wait begins.
+        """
+        lang = session.lang
+        self._ensure_keyboard(chat_id, session)
+        self._send(chat_id, t("arb.scanning", lang), session)
+
+        result = service.arbitrage(client=self.client)
+        if not result.get("ok"):
+            self._send(chat_id, t("msg.error", lang, error=str(result.get("error"))), session)
+            return
+
+        found = result.get("opportunities") or []
+        priced = result.get("priced", 0)
+        if not found:
+            self._send(chat_id, t("arb.none", lang, scanned=priced), session)
+            return
+
+        lines = [t("arb.found", lang, count=len(found), scanned=priced), ""]
+        for index, row in enumerate(found, start=1):
+            lines.append(
+                t(
+                    "arb.row",
+                    lang,
+                    n=index,
+                    question=row["question"][:70],
+                    yes=f"{row['yes_price'] * 100:.1f}",
+                    no=f"{row['no_price'] * 100:.1f}",
+                    total=f"{row['cost'] * 100:.1f}",
+                    edge=f"{row['gross_edge'] * 100:.2f}",
+                    pct=f"{row['edge_pct']:.2f}",
+                    size=f"{row['size_pairs']:,.0f}",
+                    profit=f"${row['gross_profit']:,.2f}",
+                )
+            )
+            if not row.get("survives_fees"):
+                lines.append(f"   ⚠️ {t('arb.fees_kill', lang)}")
+            lines.append("")
+        lines.append(t("arb.warning", lang))
+        self._send(chat_id, "\n".join(lines), session)
+
+    def _toggle_watch(self, chat_id: int, session: menu_mod.MenuSession, token: str) -> None:
+        ref = session.resolve(token)
+        if ref is None:
+            self._send(chat_id, t("msg.expired", session.lang), session)
+            return
+        watching = self._watchlist.toggle(chat_id, ref)
+        key = "msg.watch_added" if watching else "msg.watch_removed"
+        self._send(chat_id, t(key, session.lang), session)
+
+    def _show_watchlist(self, chat_id: int, session: menu_mod.MenuSession) -> None:
+        lang = session.lang
+        self._ensure_keyboard(chat_id, session)
+        refs = self._watchlist.list(chat_id)
+        if not refs:
+            self._send(chat_id, t("msg.watchlist_empty", lang), session)
+            return
+
+        session.refs = {}
+        entries: list[tuple[str, str | None, int, str]] = []
+        lines = [t("title.watchlist", lang), ""]
+        for number, ref in enumerate(refs, start=1):
+            result = service.briefing(ref, client=self.client)
+            if not result.get("ok"):
+                # One unreadable bookmark must not blank the whole screen.
+                lines.append(f"{number}. {ref} - {result.get('error')}")
+                continue
+            row = {
+                "question": result.get("question"),
+                "yes": {"price": result.get("yes_price")},
+                "spread": (result.get("book") or {}).get("spread"),
+                "days_left": None,
+                "volume_24h": None,
+            }
+            lines.append(menu_mod.render_market_row(number, row, lang))
+            lines.append("")
+            entries.append(
+                (session.remember(ref), result.get("url"), number, str(result.get("question") or ref))
+            )
+
+        keyboard = menu_mod.market_rows_keyboard(
+            entries, lang=lang, page=0, pages=1, view=menu_mod.VIEW_WATCHLIST
+        )
+        self._reply(chat_id, keyboard, "\n".join(lines).rstrip())
+
     def _show_list(self, chat_id: int, session: menu_mod.MenuSession, *, sort: str, page: int) -> None:
         lang = session.lang
+        # The reply keyboard cannot ride the same message as the inline one, so
+        # it is painted first when this session has not painted it yet.
+        self._ensure_keyboard(chat_id, session)
+
         result = service.scan(
             limit=_LIST_FETCH, keyword=session.query, sort=sort, client=self.client
         )
@@ -428,7 +554,7 @@ class TelegramBot:
             return
 
         title = (
-            t("title.search", lang, query=session.query)
+            t("title.search", lang, query=session.query, count=len(rows))
             if session.query
             else t("title.hot", lang)
         )
@@ -440,43 +566,86 @@ class TelegramBot:
         # Fresh tokens for this page. The refs map is rebuilt rather than
         # appended to, so it cannot grow without bound over a long session.
         session.refs = {}
+        first = session.page * menu_mod.PAGE_SIZE
         entries = [
-            (session.remember(str(row.get("slug") or row.get("condition_id") or "")), row.get("url"))
-            for row in page_rows
+            (
+                session.remember(str(row.get("slug") or row.get("condition_id") or "")),
+                row.get("url"),
+                first + offset + 1,
+                str(row.get("question") or row.get("slug") or ""),
+            )
+            for offset, row in enumerate(page_rows)
         ]
         view = menu_mod.VIEW_SEARCH if session.query else menu_mod.VIEW_HOT
         keyboard = menu_mod.market_rows_keyboard(
             entries, lang=lang, page=session.page, pages=pages, view=view
         )
-        # Only the inline keyboard here. Telegram allows one markup per
-        # message, and a reply keyboard already sent stays on screen until it
-        # is explicitly replaced - so the persistent menu is not lost by
-        # sending an inline keyboard alongside it.
         self._reply(chat_id, keyboard, text)
 
     def _show_market(self, chat_id: int, session: menu_mod.MenuSession, token: str) -> None:
         ref = session.resolve(token)
         if ref is None:
+            # Every token from a previous process is unknown after a restart.
+            # Saying "expired" and stopping leaves nothing to tap, so recover
+            # into a fresh list instead of dead-ending the owner.
             self._send(chat_id, t("msg.expired", session.lang), session)
+            session.query = None
+            self._show_list(chat_id, session, sort="hot", page=0)
             return
+
+        self._ensure_keyboard(chat_id, session)
         result = service.briefing(ref, client=self.client)
         if not result.get("ok"):
             self._send(
                 chat_id, t("msg.error", session.lang, error=str(result.get("error"))), session
             )
             return
+
         text = with_disclaimer(str(result.get("text") or ""))
         back = menu_mod.VIEW_SEARCH if session.query else menu_mod.VIEW_HOT
         keyboard = menu_mod.market_keyboard(
-            token, result.get("url"), lang=session.lang, back_view=back
+            token,
+            result.get("url"),
+            lang=session.lang,
+            back_view=back,
+            yes_price=result.get("yes_price"),
+            no_price=result.get("no_price"),
+            watching=self._watchlist.contains(chat_id, ref),
         )
         self._reply(chat_id, keyboard, text)
+
+    #: More-menu actions that only read. Safe to run straight off a tap.
+    _READ_ACTIONS = ("status", "rules", "analyze", "monitor", "redeem")
+
+    #: Actions that change something on the exchange and cannot be undone.
+    #: These get a confirmation step; the "!" suffix is the confirmed form.
+    _DESTRUCTIVE_ACTIONS = ("cancel",)
 
     def _show_more(self, chat_id: int, session: menu_mod.MenuSession, arg: str) -> None:
         lang = session.lang
         if not arg:
             self._reply(chat_id, menu_mod.more_keyboard(lang), t("title.more", lang))
             return
+
+        # Cancelling every resting order removes any take-profit working on the
+        # book - the only exit that survives the bot being offline. Every other
+        # irreversible action in this bot asks first; a single tap on a phone,
+        # next to read-only buttons, must not be the exception.
+        if arg in self._DESTRUCTIVE_ACTIONS:
+            self._reply(
+                chat_id,
+                menu_mod.confirm_action_keyboard(arg, lang=lang),
+                t(f"confirm.{arg}", lang),
+            )
+            return
+
+        confirmed = arg.endswith("!")
+        name = arg[:-1] if confirmed else arg
+        if confirmed and name not in self._DESTRUCTIVE_ACTIONS:
+            # A confirmed form only exists for the actions that need one.
+            self._send(chat_id, t("msg.welcome", lang), session)
+            return
+
         actions = {
             "status": lambda: service.status(client=self.client),
             # list_rules reads the local rule store; it takes no client.
@@ -486,7 +655,7 @@ class TelegramBot:
             "redeem": lambda: service.redeem(client=self.client),
             "cancel": lambda: service.cancel_orders(client=self.client),
         }
-        action = actions.get(arg)
+        action = actions.get(name)
         if action is None:
             self._send(chat_id, t("msg.welcome", lang), session)
             return
@@ -528,9 +697,12 @@ class TelegramBot:
         priced plan and the Confirm/Cancel keyboard exactly as before."""
         try:
             usd = float(text.replace(",", "").replace("$", "").strip())
-            if usd <= 0:
+            # isfinite before the range check: "nan" passes `<= 0` (every NaN
+            # comparison is False) and "inf" passes `> 0`. trading.py rejects
+            # both, but the prompt is where a person typed it.
+            if not math.isfinite(usd) or usd <= 0:
                 raise ValueError
-        except ValueError:
+        except (ValueError, OverflowError):
             self._send(chat_id, t("prompt.bad_amount", session.lang, value=text), session)
             return
 

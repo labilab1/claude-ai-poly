@@ -48,16 +48,41 @@ class TelegramAPI:
         self._token = token
         self._session = session or requests.Session()
 
+    def _redact(self, text: str) -> str:
+        """Replace the bot token wherever it appears in a string.
+
+        The token is part of the request URL, and `requests` puts the URL into
+        the message of every transport-level exception it raises. Those
+        messages are logged, and on the menu paths they are shown in the chat -
+        so an ordinary network blip would otherwise write a working bot token
+        into a log file. Anyone who reads it can place orders.
+        """
+        if not self._token:
+            return text
+        return text.replace(self._token, "<BOT_TOKEN_REDACTED>")
+
     def _call(self, method: str, *, params: dict[str, Any] | None = None, timeout: float | None = None) -> Any:
         url = _BASE.format(token=self._token, method=method)
-        response = self._session.post(url, json=params or {}, timeout=timeout or _HTTP_TIMEOUT_SECONDS)
+        try:
+            response = self._session.post(
+                url, json=params or {}, timeout=timeout or _HTTP_TIMEOUT_SECONDS
+            )
+        except Exception as exc:
+            # Never let a transport error escape carrying the URL: see _redact.
+            raise TelegramError(method, self._redact(f"{type(exc).__name__}: {exc}")) from None
         try:
             payload = response.json()
         except ValueError as exc:
-            raise TelegramError(method, f"non-JSON response: {response.text[:200]}", status_code=response.status_code) from exc
+            raise TelegramError(
+                method,
+                self._redact(f"non-JSON response: {response.text[:200]}"),
+                status_code=response.status_code,
+            ) from exc
         if not payload.get("ok"):
             raise TelegramError(
-                method, str(payload.get("description") or "unknown error"), status_code=response.status_code
+                method,
+                self._redact(str(payload.get("description") or "unknown error")),
+                status_code=response.status_code,
             )
         return payload.get("result")
 
