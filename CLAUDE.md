@@ -10,7 +10,9 @@ This file documents how to work on this project effectively. Decisions here refl
 - ✅ Monitor that enforces rules (dry-run by default, `--execute` for live)
 - ✅ Read-only analytics: portfolio, trade history, market scanning, opportunities
 - ✅ Telegram bot: thin router over service.py, inline Confirm/Cancel buttons, single-owner lock
-- ✅ 124/124 tests passing (including 36 Telegram tests)
+- ✅ **Push alerts**: monitor fans trade/alert/error events out to Telegram
+- ✅ **Standalone `redeem` / `cancel` CLI commands**
+- ✅ 184/184 tests passing
 - ✅ Safety guardrails: per-order caps, position caps, daily loss limit, slippage guards
 - ✅ Fee disclosure: warns users of 5% taker fees on high-fee markets
 - ✅ Cost-basis lag protection: detects fresh fills before entry price is populated
@@ -20,17 +22,28 @@ This file documents how to work on this project effectively. Decisions here refl
 # Start the Telegram bot (listens for messages, confirms with inline buttons)
 python -m polymarket_bot.scripts.telegram_bot
 
+# Watch positions and enforce exit rules; pushes to Telegram when configured
+python -m polymarket_bot.scripts.monitor              # dry run, continuous
+python -m polymarket_bot.scripts.monitor --execute    # live exits
+
 # Or run CLI commands for testing:
 python -m polymarket_bot.scripts.check_connection      # verify account
 python -m polymarket_bot.scripts.portfolio             # show holdings
 python -m polymarket_bot.scripts.monitor --once        # dry-run rule sweep
 python -m polymarket_bot.scripts.place_test_order ...  # preview/execute orders
+python -m polymarket_bot.scripts.redeem                # claim settled positions
+python -m polymarket_bot.scripts.cancel                # cancel resting orders
 ```
 
-**What's left to do (optional):**
-- Push alerts from monitor into Telegram (monitor fires rules, notifies you in chat)
-- Choose where monitor runs 24/7 (VPS ~$5/mo, Raspberry Pi, or always-on PC)
-- Define your actual trading strategy (what markets to look for, position sizing)
+**What's left to do:**
+- Choose where monitor runs 24/7 (VPS ~$5/mo, Raspberry Pi, or always-on PC).
+  Until then, stop-losses are only enforced while the monitor is running here.
+- Strategy layer — arbitrage between correlated markets, mispricing signals,
+  forecasting. **Not yet designed**; needs its own brainstorm + spec. Note the
+  advisor is deliberately non-predictive today (see `advisor.py`'s docstring),
+  so this is a genuine addition, not a tweak.
+- Optionally mirror a take-profit as a resting limit order so it survives the
+  bot being offline.
 
 ## Security & Secrets
 - **Never ask the user to paste secrets into chat.** Not POLYMARKET_PRIVATE_KEY, wallet addresses, Telegram tokens, or anything from `.env`.
@@ -45,6 +58,13 @@ python -m polymarket_bot.scripts.place_test_order ...  # preview/execute orders
   3. **Regression test**: added to test suite to prevent backsliding
 - **Run the full test suite after changes**: `python -m pytest -q`. Must pass before declaring done.
 - **Test the CLI path first**, then wire to Telegram if applicable. CLI is the reference implementation.
+- **Stub the seam the code actually reads.** A test that patches an attribute
+  which doesn't exist still passes — silently, forever. `test_empty_positions_reads_never_retire_a_rule`
+  stubbed `Monitor._live_positions`, which was never a real method; the sweep
+  died on its first read and the assertion held for the wrong reason. When a
+  test guards a money bug, prove it fails against the broken behaviour before
+  trusting it. The real seams: `portfolio.get_positions` (positions),
+  `trading.get_market_by_condition_id` (the re-verify read in `execute_plan`).
 
 ## Safety Model
 - **Blockers** (prefixed `X BLOCKED`) are refused, no override. Never relax them for speed.

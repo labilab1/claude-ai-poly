@@ -549,8 +549,14 @@ before putting its key on a server.
   chosen in [Running without a computer left on](#running-without-a-computer-left-on).
 * Maker-side strategy for CLOB liquidity rewards (currently 100% of fills on
   this account are taker fills, which pay the spread and earn no rewards).
-* Broader test coverage beyond `rules.py` and the Telegram layer
-  (`tests/test_rules.py`, `tests/test_telegram_*.py`).
+* A strategy layer that seeks actual edge — arbitrage between correlated
+  markets, mispricing signals, forecasting. Nothing here does this today: the
+  advisor explains structure and ranks *tradability*, and deliberately makes no
+  prediction about which outcome wins (`advisor.py`).
+* Deeper coverage of the remaining `trading.py` / `monitor.py` / `service.py`
+  surface. The money paths are pinned (`tests/test_trading.py`,
+  `tests/test_monitor.py`, `tests/test_service.py`); the reporting and
+  formatting paths are still only covered indirectly.
 
 > Not financial advice. Prediction markets are speculative and you can lose your
 > entire stake. Only risk money you can afford to lose.
