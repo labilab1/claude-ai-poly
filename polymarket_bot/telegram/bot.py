@@ -37,7 +37,9 @@ from polymarket_bot.client import get_client
 from polymarket_bot.config import Settings
 from polymarket_bot.notify import ConsoleNotifier, Notifier
 from polymarket_bot.scripts._common import with_disclaimer
+from polymarket_bot.telegram import menu as menu_mod
 from polymarket_bot.telegram.api import TelegramAPI, chunk_message, confirm_keyboard
+from polymarket_bot.telegram.i18n import load_lang, save_lang, t, toggled
 
 _PENDING_TTL_SECONDS = 120
 
@@ -48,6 +50,19 @@ _TRADE_ACTIONS = frozenset({"confirm", "cancel"})
 # Navigation prefix, reserved here so the router knows it even before the menu
 # module is wired in.
 _NAV_ACTION = "nav"
+
+# How many markets a menu list fetches before paginating them locally. Paging
+# in memory beats re-scanning per page: a scan is bounded network I/O, and the
+# owner tapping "next" should not wait for another sweep.
+_LIST_FETCH = 30
+
+
+def _int(value: str, default: int = 0) -> int:
+    """Callback arguments are strings from an untrusted round trip."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 @dataclass
@@ -80,9 +95,17 @@ class TelegramBot:
         self._offset: int | None = None
         self._pending: dict[str, _Pending] = {}
         self._running = False
+        self._sessions = menu_mod.SessionStore()
+        # Persistent-keyboard buttons arrive as plain text, so the router
+        # recognises them by label - in either language, since a toggle does
+        # not repaint a keyboard already sitting on someone's screen.
+        self._reply_labels = menu_mod.reply_labels("en")
         self._commands = {
-            "start": self._cmd_help,
+            # /start opens the menu; /help still lists the typed commands, which
+            # remain the complete, scriptable interface.
+            "start": self._cmd_start,
             "help": self._cmd_help,
+            "menu": self._cmd_start,
             "status": self._cmd_status,
             "positions": self._cmd_positions,
             "scan": self._cmd_scan,
@@ -168,13 +191,59 @@ class TelegramBot:
         if not message:
             return
         text = (message.get("text") or "").strip()
-        if not text.startswith("/"):
+        if not text:
             return
-        self._handle_command(message, text)
+        if text.startswith("/"):
+            self._handle_command(message, text)
+            return
+        # Plain text is now meaningful: it is either a persistent-keyboard
+        # button or the answer to a prompt the bot is waiting on.
+        self._handle_text(message, text)
 
     def _is_authorized(self, chat_id: Any) -> bool:
         allowed = self.settings.telegram_chat_id
         return bool(allowed) and str(chat_id) == str(allowed)
+
+    def _handle_text(self, message: dict, text: str) -> None:
+        """A plain (non-command) message: a menu button, or a prompt answer."""
+        chat = message.get("chat") or {}
+        chat_id = chat.get("id")
+        if chat_id is None or not self._is_authorized(chat_id):
+            # Same silence as an unauthorized command: a stranger who finds the
+            # bot learns nothing, not even that it is listening.
+            return
+
+        session = self._session(chat_id)
+
+        view = self._reply_labels.get(text)
+        if view is not None:
+            # A keyboard tap always wins over an outstanding prompt: the owner
+            # navigating away is a cancellation of whatever was being asked.
+            session.clear_prompt()
+            self._show_guarded(chat_id, session, view, "")
+            return
+
+        awaiting = session.awaiting
+        if awaiting == menu_mod.AWAIT_SEARCH:
+            session.clear_prompt()
+            session.query = text
+            session.page = 0
+            self._show_guarded(chat_id, session, menu_mod.VIEW_SEARCH, "0")
+            return
+        if awaiting == menu_mod.AWAIT_BUY_AMOUNT:
+            self._finish_buy_prompt(chat_id, session, text)
+            return
+        # Nothing was expected. Re-show the keyboard rather than ignoring the
+        # owner, who may simply have lost it.
+        self._send(chat_id, t("msg.welcome", session.lang), session)
+
+    def _session(self, chat_id: int) -> menu_mod.MenuSession:
+        session = self._sessions.get(chat_id, lang=load_lang(self.settings, chat_id))
+        return session
+
+    def _send(self, chat_id: int, text: str, session: menu_mod.MenuSession) -> int | None:
+        """Send with the persistent keyboard attached."""
+        return self._reply(chat_id, menu_mod.persistent_keyboard(session.lang), text)
 
     def _handle_command(self, message: dict, text: str) -> None:
         chat = message.get("chat") or {}
@@ -287,7 +356,191 @@ class TelegramBot:
         if action != _NAV_ACTION:
             self._ack(callback_id, "Unrecognized action.")
             return
-        self._ack(callback_id)
+
+        session = self._session(chat_id)
+        view, arg = menu_mod.parse_nav(token)
+        # Acknowledge immediately: Telegram spins the button until this lands,
+        # and a screen that fetches live data takes longer than that patience.
+        self._ack(callback_id, t("msg.loading", session.lang))
+        self._show_guarded(chat_id, session, view, arg)
+
+    # ---- screens -----------------------------------------------------------
+    def _show_guarded(
+        self, chat_id: int, session: menu_mod.MenuSession, view: str, arg: str
+    ) -> None:
+        """Render a screen, turning any failure into a message.
+
+        Every entry point into the menu goes through here rather than calling
+        `_show` directly: a screen reached by typing must fail as gracefully as
+        one reached by tapping, and `service` raising is a live possibility on
+        every one of them.
+        """
+        try:
+            self._show(chat_id, session, view, arg)
+        except Exception as exc:
+            detail = f"{type(exc).__name__}: {exc}"
+            self._log(f"menu view {view!r} failed: {detail}", "error")
+            self._send(chat_id, t("msg.error", session.lang, error=detail), session)
+
+    def _show(self, chat_id: int, session: menu_mod.MenuSession, view: str, arg: str) -> None:
+        """Render one screen. Every branch ends in a message with the
+        persistent keyboard attached, so the menu is never lost."""
+        session.view = view
+        if view == menu_mod.VIEW_HOT:
+            self._show_list(chat_id, session, sort="hot", page=_int(arg))
+        elif view == menu_mod.VIEW_SEARCH:
+            if not session.query:
+                session.awaiting = menu_mod.AWAIT_SEARCH
+                self._send(chat_id, t("prompt.search", session.lang), session)
+            else:
+                self._show_list(chat_id, session, sort="hot", page=_int(arg))
+        elif view == menu_mod.VIEW_MARKET:
+            self._show_market(chat_id, session, arg)
+        elif view == menu_mod.VIEW_BUY:
+            self._start_buy(chat_id, session, arg)
+        elif view == menu_mod.VIEW_PORTFOLIO:
+            result = service.positions(client=self.client)
+            self._send(chat_id, str(result.get("text") or ""), session)
+        elif view == menu_mod.VIEW_LANG:
+            self._toggle_language(chat_id, session)
+        elif view == menu_mod.VIEW_MORE:
+            self._show_more(chat_id, session, arg)
+        else:
+            self._send(chat_id, t("msg.welcome", session.lang), session)
+
+    def _show_list(self, chat_id: int, session: menu_mod.MenuSession, *, sort: str, page: int) -> None:
+        lang = session.lang
+        result = service.scan(
+            limit=_LIST_FETCH, keyword=session.query, sort=sort, client=self.client
+        )
+        if not result.get("ok"):
+            self._send(chat_id, t("msg.error", lang, error=str(result.get("error"))), session)
+            return
+
+        rows = list(result.get("markets") or [])
+        if not rows:
+            text = (
+                t("list.search_empty", lang, query=session.query)
+                if session.query
+                else t("list.empty", lang)
+            )
+            self._send(chat_id, text, session)
+            return
+
+        title = (
+            t("title.search", lang, query=session.query)
+            if session.query
+            else t("title.hot", lang)
+        )
+        text, page_rows, pages = menu_mod.render_list(
+            rows, lang=lang, page=page, title=title, note=t("msg.hot_note", lang)
+        )
+        session.page = max(0, min(page, pages - 1))
+
+        # Fresh tokens for this page. The refs map is rebuilt rather than
+        # appended to, so it cannot grow without bound over a long session.
+        session.refs = {}
+        entries = [
+            (session.remember(str(row.get("slug") or row.get("condition_id") or "")), row.get("url"))
+            for row in page_rows
+        ]
+        view = menu_mod.VIEW_SEARCH if session.query else menu_mod.VIEW_HOT
+        keyboard = menu_mod.market_rows_keyboard(
+            entries, lang=lang, page=session.page, pages=pages, view=view
+        )
+        # Only the inline keyboard here. Telegram allows one markup per
+        # message, and a reply keyboard already sent stays on screen until it
+        # is explicitly replaced - so the persistent menu is not lost by
+        # sending an inline keyboard alongside it.
+        self._reply(chat_id, keyboard, text)
+
+    def _show_market(self, chat_id: int, session: menu_mod.MenuSession, token: str) -> None:
+        ref = session.resolve(token)
+        if ref is None:
+            self._send(chat_id, t("msg.expired", session.lang), session)
+            return
+        result = service.briefing(ref, client=self.client)
+        if not result.get("ok"):
+            self._send(
+                chat_id, t("msg.error", session.lang, error=str(result.get("error"))), session
+            )
+            return
+        text = with_disclaimer(str(result.get("text") or ""))
+        back = menu_mod.VIEW_SEARCH if session.query else menu_mod.VIEW_HOT
+        keyboard = menu_mod.market_keyboard(
+            token, result.get("url"), lang=session.lang, back_view=back
+        )
+        self._reply(chat_id, keyboard, text)
+
+    def _show_more(self, chat_id: int, session: menu_mod.MenuSession, arg: str) -> None:
+        lang = session.lang
+        if not arg:
+            self._reply(chat_id, menu_mod.more_keyboard(lang), t("title.more", lang))
+            return
+        actions = {
+            "status": lambda: service.status(client=self.client),
+            # list_rules reads the local rule store; it takes no client.
+            "rules": lambda: service.list_rules(),
+            "analyze": lambda: service.analytics(client=self.client),
+            "monitor": lambda: service.monitor_once(client=self.client),
+            "redeem": lambda: service.redeem(client=self.client),
+            "cancel": lambda: service.cancel_orders(client=self.client),
+        }
+        action = actions.get(arg)
+        if action is None:
+            self._send(chat_id, t("msg.welcome", lang), session)
+            return
+        result = action()
+        self._send(chat_id, str(result.get("text") or ""), session)
+
+    def _toggle_language(self, chat_id: int, session: menu_mod.MenuSession) -> None:
+        session.lang = toggled(session.lang)
+        try:
+            save_lang(self.settings, chat_id, session.lang)
+        except Exception as exc:
+            # A preference that could not be written is worth saying out loud:
+            # otherwise it silently reverts on restart.
+            self._log(f"could not persist language: {type(exc).__name__}: {exc}", "error")
+        self._send(chat_id, t("msg.language_set", session.lang), session)
+        self._reply(chat_id, menu_mod.more_keyboard(session.lang), t("title.more", session.lang))
+
+    # ---- buying from the menu ---------------------------------------------
+    def _start_buy(self, chat_id: int, session: menu_mod.MenuSession, arg: str) -> None:
+        """Ask for an amount. Nothing is priced or sent until it arrives."""
+        side, _, token = arg[:1], None, arg[1:]
+        ref = session.resolve(token)
+        if ref is None or side not in ("y", "n"):
+            self._send(chat_id, t("msg.expired", session.lang), session)
+            return
+        outcome = "yes" if side == "y" else "no"
+        session.awaiting = menu_mod.AWAIT_BUY_AMOUNT
+        session.pending_market = ref
+        session.pending_outcome = outcome
+        self._send(
+            chat_id,
+            t("prompt.buy_amount", session.lang, outcome=outcome.upper()),
+            session,
+        )
+
+    def _finish_buy_prompt(self, chat_id: int, session: menu_mod.MenuSession, text: str) -> None:
+        """Turn a typed amount into a PREVIEW. Still nothing sent: this goes
+        through the same `confirm=False` path as /buy, so the owner gets the
+        priced plan and the Confirm/Cancel keyboard exactly as before."""
+        try:
+            usd = float(text.replace(",", "").replace("$", "").strip())
+            if usd <= 0:
+                raise ValueError
+        except ValueError:
+            self._send(chat_id, t("prompt.bad_amount", session.lang, value=text), session)
+            return
+
+        market_ref = session.pending_market or ""
+        outcome = session.pending_outcome or "yes"
+        session.clear_prompt()
+        result = service.buy(market_ref, outcome, usd, client=self.client)
+        self._present_trade_preview(
+            chat_id, action="buy", market_ref=market_ref, outcome=outcome, result=result
+        )
 
     def _ack(self, callback_id: str | None, text: str | None = None) -> None:
         if not callback_id:
@@ -345,9 +598,21 @@ class TelegramBot:
             self._reply(chat_id, None, text)
 
     # ---- commands ----------------------------------------------------------
+    def _cmd_start(self, chat_id: int, args: list[str]) -> None:
+        """Open the menu: welcome text plus the persistent keyboard."""
+        session = self._session(chat_id)
+        session.clear_prompt()
+        session.query = None
+        self._send(chat_id, t("msg.welcome", session.lang), session)
+
     def _cmd_help(self, chat_id: int, args: list[str]) -> None:
         lines = [
-            "Polymarket bot commands:",
+            "Polymarket bot.",
+            "",
+            "  /menu - open the button menu (hot markets, search, portfolio)",
+            "",
+            "Typed commands do everything the menu does, and a few things it",
+            "does not (limit orders, selling, exit rules):",
             "  /status - cash, positions, P&L, rules, monitor mode",
             "  /positions [all] - open positions ('all' includes settled)",
             "  /scan [keyword] - tradable markets, tightest spread first",

@@ -617,6 +617,7 @@ def briefing(market_ref: str, *, client: SecureClient | None = None) -> dict:
         lines=lines,
         book=_snapshot_dict(snapshot),
         accepting_orders=is_tradable(market),
+        url=market_url(market),
         disclaimer=advisor.DISCLAIMER,
     )
 
