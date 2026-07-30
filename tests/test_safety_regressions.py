@@ -165,7 +165,15 @@ def test_a_normal_exit_is_not_over_blocked():
 
 def test_empty_positions_reads_never_retire_a_rule():
     """An empty /positions response is a failed read, not proof of a sale.
-    Counting it retired every rule on the account after a ~3 minute glitch."""
+    Counting it retired every rule on the account after a ~3 minute glitch.
+
+    The seam is `portfolio.get_positions` - a module function called on the
+    client, not a Monitor method. This test previously stubbed a Monitor
+    attribute named `_live_positions`, which does not exist: `run_once` then
+    died on the first read against a bare SimpleNamespace client and returned
+    before evaluating anything, so `deactivated == []` held for the wrong
+    reason and the guard below was never executed at all.
+    """
     with tempfile.TemporaryDirectory() as td:
         settings = _settings(Path(td), monitor_dry_run=True)
         store = RuleStore(settings)
@@ -173,13 +181,40 @@ def test_empty_positions_reads_never_retire_a_rule():
             store.add(_rule(f"rule{i}"))
 
         monitor = mon.Monitor(client=SimpleNamespace(), settings=settings, store=store)
-        monitor._live_positions = lambda: ([], True)  # type: ignore[attr-defined]
 
-        for _ in range(5):
-            report = monitor.run_once()
-            assert report.deactivated == [], "an empty read retired a rule"
+        with mock.patch.object(mon.portfolio, "get_positions", return_value=[]):
+            for _ in range(5):
+                report = monitor.run_once()
+                assert report.deactivated == [], "an empty read retired a rule"
+                # The sweep must also SAY it failed; a silent empty read is how
+                # this looked like a successful "everything was sold" pass.
+                assert report.errors, "an empty positions read was reported as a clean sweep"
 
         assert len(store.list(active_only=True)) == 4
+
+
+def test_a_non_empty_read_missing_one_token_still_needs_repeated_absences():
+    """The other half of the guard: a successful read that simply lacks this
+    token is real evidence, but one such read must still not retire the rule."""
+    with tempfile.TemporaryDirectory() as td:
+        settings = _settings(Path(td), monitor_dry_run=True)
+        store = RuleStore(settings)
+        store.add(_rule("lonely"))
+
+        other = PositionView(
+            condition_id="0xother", token_id="SOMETHING_ELSE", opposite_token_id="X",
+            market_title="Other?", slug="other", outcome="Yes",
+            shares=10.0, avg_price=0.5, cur_price=0.5, cost_basis=5.0, current_value=5.0,
+            unrealized_pnl=0.0, unrealized_pnl_pct=0.0, realized_pnl=0.0,
+            redeemable=False, is_resolved=False, end_date=None,
+        )
+        monitor = mon.Monitor(client=SimpleNamespace(), settings=settings, store=store)
+
+        with mock.patch.object(mon.portfolio, "get_positions", return_value=[other]):
+            report = monitor.run_once()
+
+        assert report.deactivated == [], "one absence from a good read retired the rule"
+        assert len(store.list(active_only=True)) == 1
 
 
 def test_a_failed_deactivation_cannot_fire_the_rule_again():
