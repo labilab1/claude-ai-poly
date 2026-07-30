@@ -12,7 +12,11 @@ This file documents how to work on this project effectively. Decisions here refl
 - ✅ Telegram bot: thin router over service.py, inline Confirm/Cancel buttons, single-owner lock
 - ✅ **Push alerts**: monitor fans trade/alert/error events out to Telegram
 - ✅ **Standalone `redeem` / `cancel` CLI commands**
-- ✅ 184/184 tests passing
+- ✅ **Telegram menu UI**: hot markets, keyword search, market detail, buy flow,
+  watchlist, English/Hebrew toggle
+- ✅ **Arbitrage detection** (`arbitrage.py`): taker scan (both asks) and maker
+  pairs (both bids), priced from real order books
+- ✅ 403/403 tests passing
 - ✅ Safety guardrails: per-order caps, position caps, daily loss limit, slippage guards
 - ✅ Fee disclosure: warns users of 5% taker fees on high-fee markets
 - ✅ Cost-basis lag protection: detects fresh fills before entry price is populated
@@ -33,17 +37,43 @@ python -m polymarket_bot.scripts.monitor --once        # dry-run rule sweep
 python -m polymarket_bot.scripts.place_test_order ...  # preview/execute orders
 python -m polymarket_bot.scripts.redeem                # claim settled positions
 python -m polymarket_bot.scripts.cancel                # cancel resting orders
+python -m polymarket_bot.scripts.arbitrage             # YES+NO under $1 (taker)
+python -m polymarket_bot.scripts.arbitrage --maker     # the bid side (common)
 ```
+
+## Arbitrage: what is real and what is not
+
+Measured against live books on 2026-07-31, and the numbers drove the design:
+
+- **Taker arb (paying both asks) essentially does not exist.** Across 23 liquid
+  markets every pair priced 100.1¢–102¢; none were below par. The ~1¢ over is
+  the spread you cross twice. Do not expect this scan to find anything — when
+  it does, suspect a stale book before celebrating.
+- **Maker pairs (resting a bid on both sides) exist nearly everywhere.** All 23
+  had a positive gap, median 1.00¢. This is not the venue leaving money out:
+  the gap is a market maker's compensation for fill risk and adverse selection.
+  You collect it only by bearing those.
+- **Fees decide it.** Taker fees reach 5%, larger than any edge either scan
+  finds. `net_edge` subtracts an estimate and the report says when fees eat it.
+- **Never price from gamma quotes.** `market.outcomes.*.price` is mid/last. An
+  edge computed from a midpoint is not there at the touch. Always walk the book.
+- **Liquidity reward rates are the market's shared daily pool**, split across
+  every provider — not an individual payout. Wording it otherwise reads as
+  "$1000/day" on an account holding $21.
+- **Neither finder can trade, on purpose.** Both legs must fill, there is no
+  atomic two-leg order on Polymarket, and a half-filled pair is a naked
+  directional position. No execution path exists in `arbitrage.py`.
 
 **What's left to do:**
 - Choose where monitor runs 24/7 (VPS ~$5/mo, Raspberry Pi, or always-on PC).
   Until then, stop-losses are only enforced while the monitor is running here.
-- Strategy layer — arbitrage between correlated markets, mispricing signals,
-  forecasting. **Not yet designed**; needs its own brainstorm + spec. Note the
-  advisor is deliberately non-predictive today (see `advisor.py`'s docstring),
-  so this is a genuine addition, not a tweak.
 - Optionally mirror a take-profit as a resting limit order so it survives the
   bot being offline.
+- A maker-side *strategy* (as opposed to the current detector): actually
+  posting both legs, tracking partial fills, and unwinding a leg that fills
+  alone. That is a real trading system with its own risk model, not a report.
+- Forecasting / correlated-market mispricing. Still not designed, and note the
+  advisor stays deliberately non-predictive (`advisor.py`).
 
 ## Security & Secrets
 - **Never ask the user to paste secrets into chat.** Not POLYMARKET_PRIVATE_KEY, wallet addresses, Telegram tokens, or anything from `.env`.

@@ -169,6 +169,7 @@ instead.
 | `place_test_order` | Preview or place one order | only with `--execute` |
 | `redeem` | Claim every settled position | yes (cannot lose money) |
 | `cancel` | Cancel every resting order | yes (cannot lose money) |
+| `arbitrage` | YES+NO pairs priced under the $1 they redeem for | no |
 | `telegram_bot` | Chat front end over all of the above (see [Telegram bot](#telegram-bot)) | only after tapping Confirm |
 
 ### Diagnostics
@@ -523,6 +524,60 @@ trade for a small, dedicated trading wallet — it is **not** a reasonable trade
 for a wallet holding anything you'd mind losing. Use a wallet sized for that
 before putting its key on a server.
 
+## Arbitrage (`arbitrage`)
+
+The one edge here that needs no forecast. A YES share and a NO share of the
+same market always redeem for **exactly $1.00 together** — one pays $1, the
+other pays $0, whichever way it resolves. So a pair bought for less than $1.00
+is profit that does not depend on the outcome. That is arithmetic on two
+prices, not a view on who wins.
+
+```powershell
+# Pay both ASKS - instant, certain, and almost never available
+python -m polymarket_bot.scripts.arbitrage
+
+# REST a bid on both sides - common, but the fills are not guaranteed
+python -m polymarket_bot.scripts.arbitrage --maker
+
+python -m polymarket_bot.scripts.arbitrage --fee 0.05   # assume a 5% taker fee
+```
+
+### What the live books actually say
+
+Measured across 23 liquid markets on 2026-07-31:
+
+| | sum of the two legs | how often |
+|---|---|---|
+| **Taker** (both asks) | 100.1¢ – 102.0¢, median 101¢ | **0 of 23** below par |
+| **Maker** (both bids) | 98.0¢ – 99.9¢, median 99¢ | **23 of 23** below par |
+
+The ~1¢ over par on the taker side is the spread, crossed twice. The ~1¢ under
+par on the maker side is the same spread seen from the other end — and it is
+what a market maker is paid for. You collect it only by taking on what they
+take on:
+
+* **A resting bid may never fill.** It trades only when someone crosses it.
+* **One leg filling alone leaves you naked** — a directional position at a
+  price you did not choose, with no hedge.
+* **Adverse selection.** The side that fills first is disproportionately the
+  side the market is moving against. That is *why* the gap is about this size.
+
+### Why neither scan will ever place an order
+
+Both legs must fill for the profit to be real, and Polymarket has no atomic
+two-leg order. `arbitrage.py` therefore contains no execution path and nothing
+wires one — the module cannot trade even by accident. Use `/buy` with a limit
+price if you want to try a leg by hand.
+
+Two more things the report is careful about:
+
+* **Prices come from the order book, never from `market.outcomes.*.price`.**
+  Those are mid/last quotes; an edge computed from a midpoint is not there when
+  you go to take it. A market whose book cannot be read is skipped, not guessed.
+* **Liquidity reward rates are the market's whole daily pool**, shared across
+  every provider in proportion to what they quote. It is not what you would
+  earn.
+
 ## Limitations (honest list)
 
 * **No forecasting.** Opportunity scores rank tradability — spread, resting
@@ -549,10 +604,16 @@ before putting its key on a server.
   chosen in [Running without a computer left on](#running-without-a-computer-left-on).
 * Maker-side strategy for CLOB liquidity rewards (currently 100% of fills on
   this account are taker fills, which pay the spread and earn no rewards).
-* A strategy layer that seeks actual edge — arbitrage between correlated
-  markets, mispricing signals, forecasting. Nothing here does this today: the
+* A maker *strategy*, as opposed to the current detector: actually posting both
+  legs, tracking partial fills, and unwinding a leg that fills alone. That is a
+  trading system with its own risk model, not a report — see
+  [Arbitrage](#arbitrage-arbitrage) for why the detector deliberately stops at
+  reporting.
+* Forecasting and correlated-market mispricing. Nothing here does this: the
   advisor explains structure and ranks *tradability*, and deliberately makes no
-  prediction about which outcome wins (`advisor.py`).
+  prediction about which outcome wins (`advisor.py`). The arbitrage scans are
+  not an exception — they compare two prices to each other rather than
+  predicting either.
 * Deeper coverage of the remaining `trading.py` / `monitor.py` / `service.py`
   surface. The money paths are pinned (`tests/test_trading.py`,
   `tests/test_monitor.py`, `tests/test_service.py`); the reporting and

@@ -124,6 +124,9 @@ class TelegramBot:
             "monitor": self._cmd_monitor,
             "redeem": self._cmd_redeem,
             "cancel": self._cmd_cancel,
+            "arb": self._cmd_arb,
+            "arbitrage": self._cmd_arb,
+            "watchlist": self._cmd_watchlist,
         }
 
     def close(self) -> None:
@@ -826,6 +829,12 @@ class TelegramBot:
         session.query = None
         self._send(chat_id, t("msg.welcome", session.lang), session)
 
+    def _cmd_arb(self, chat_id: int, args: list[str]) -> None:
+        self._show_guarded(chat_id, self._session(chat_id), menu_mod.VIEW_ARB, "")
+
+    def _cmd_watchlist(self, chat_id: int, args: list[str]) -> None:
+        self._show_guarded(chat_id, self._session(chat_id), menu_mod.VIEW_WATCHLIST, "")
+
     def _cmd_help(self, chat_id: int, args: list[str]) -> None:
         lines = [
             "Polymarket bot.",
@@ -851,6 +860,8 @@ class TelegramBot:
             "             process, not this command, is what enforces rules live)",
             "  /redeem - claim settled positions",
             "  /cancel - cancel all resting orders",
+            "  /arb - scan for YES+NO pairs priced under the $1 they redeem for",
+            "  /watchlist - the markets you starred",
             "",
             "Every /buy and /sell shows a preview with Confirm/Cancel buttons first -",
             "nothing is ever sent from a typed command alone.",
