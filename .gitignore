@@ -3,3 +3,9 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Runtime state: exit rules, monitor state, rolling P&L window.
+# Local to each install — never commit.
+data/
+.pytest_cache/
+*.log
