@@ -30,6 +30,12 @@ Polymarket has no native stop-loss. A stop-loss or trailing stop stored by
 `scripts.rules` exists only inside this process - while this is not running,
 those rules protect nothing. A take-profit can alternatively be left resting on
 the exchange as a SELL limit order, which does survive the bot being offline.
+
+With TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID both set, continuous mode also
+pushes trade/alert/error events to that chat, so a rule that fires while you
+are away from the terminal still reaches your phone. Routine per-pass chatter
+stays on the console. This is a direct HTTP call to Telegram - the separate
+`scripts.telegram_bot` process does not need to be running.
 """
 
 from __future__ import annotations
@@ -40,8 +46,8 @@ import os
 
 from polymarket_bot import service
 from polymarket_bot.client import get_client
-from polymarket_bot.config import load_settings
-from polymarket_bot.notify import ConsoleNotifier, Level
+from polymarket_bot.config import Settings, load_settings
+from polymarket_bot.notify import ConsoleNotifier, Level, MultiNotifier, Notifier
 from polymarket_bot.rules import RuleStore
 from polymarket_bot.scripts._common import (
     add_json_flag,
@@ -63,6 +69,34 @@ class _JsonNotifier:
 
     def send(self, message: str, *, level: Level = "info") -> None:
         emit(json.dumps({"level": level, "message": message}))
+
+
+def _build_notifier(settings: Settings, *, as_json: bool) -> Notifier:
+    """Pick the sink for continuous mode.
+
+    With a Telegram token AND a chat id configured, events fan out to both the
+    console and the chat, so a stop-loss that fires while nobody is watching
+    the terminal still reaches a phone. The Telegram sink filters to
+    trade/alert/error on its own - the console keeps the full debug stream.
+
+    `--json` is excluded on purpose: that mode exists for scheduled or piped
+    runs whose output is being parsed, and those are not the audience for a
+    push notification.
+    """
+    if as_json:
+        return _JsonNotifier()
+    console = ConsoleNotifier(min_level="debug")
+    if not (settings.telegram_bot_token and settings.telegram_chat_id):
+        return console
+    # Imported here so an unconfigured monitor never pays for the import, and
+    # so a broken Telegram layer cannot stop a console-only run from starting.
+    from polymarket_bot.telegram.api import TelegramAPI
+    from polymarket_bot.telegram.notifier import TelegramNotifier
+
+    return MultiNotifier(
+        console,
+        TelegramNotifier(TelegramAPI(settings.telegram_bot_token), settings.telegram_chat_id),
+    )
 
 
 def _apply_mode(execute: bool, interval: float | None) -> None:
@@ -103,7 +137,7 @@ def _forever(args: argparse.Namespace) -> int:
     from polymarket_bot.monitor import Monitor
 
     settings = load_settings()
-    notifier = _JsonNotifier() if args.json else ConsoleNotifier(min_level="debug")
+    notifier = _build_notifier(settings, as_json=args.json)
 
     monitor = None
     client = get_client()
@@ -144,10 +178,12 @@ def _run(args: argparse.Namespace) -> int:
             if args.execute
             else "DRY RUN - evaluates only, sends nothing"
         )
+        pushes = bool(settings.telegram_bot_token and settings.telegram_chat_id) and not args.once
         header = [
             "MONITOR",
             f"  Mode     : {mode}",
             f"  Interval : {'single pass' if args.once else f'{interval:g}s between passes (Ctrl-C to stop)'}",
+            f"  Alerts   : {'console + Telegram' if pushes else 'console only'}",
             "  Note     : stop-loss and trailing rules are enforced only while this runs.",
         ]
         emit(with_disclaimer("\n".join(header)))
