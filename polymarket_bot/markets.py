@@ -154,15 +154,65 @@ class BookSnapshot:
         }
 
 
-def list_tradable_markets(client: SecureClient, limit: int = 50) -> list[Market]:
-    """Return up to `limit` currently-tradable markets (live, accepting orders)."""
+def list_tradable_markets(
+    client: SecureClient,
+    limit: int = 50,
+    *,
+    order: str | None = None,
+    ascending: bool | None = None,
+) -> list[Market]:
+    """Return up to `limit` currently-tradable markets (live, accepting orders).
+
+    `order` is passed to the API when given. `order="volume24hr"` with
+    `ascending=False` is a genuine hot-first ordering; `volumeNum` and
+    `liquidityNum` sort by fields unrelated to recent activity and are not
+    worth offering. Omitting both keeps the API's default ordering, which is
+    what every existing caller expects - so they are only sent when asked for,
+    rather than sent as None.
+
+    The `break` is load-bearing: `iter_items()` pages through the whole result
+    set, and walking it unbounded against `closed=False` hangs the process.
+    """
+    query: dict[str, object] = {"closed": False, "page_size": min(limit, 100)}
+    if order is not None:
+        query["order"] = order
+    if ascending is not None:
+        query["ascending"] = ascending
+
     out: list[Market] = []
-    for market in client.list_markets(closed=False, page_size=min(limit, 100)).iter_items():
+    for market in client.list_markets(**query).iter_items():
         if is_tradable(market) and market.outcomes.yes.token_id:
             out.append(market)
             if len(out) >= limit:
                 break
     return out
+
+
+def market_url(market: Market) -> str | None:
+    """A link to this market on polymarket.com, or None if one cannot be built.
+
+    Canonical form is `/event/<event-slug>/<market-slug>`; `/market/<slug>` is
+    also a real route that redirects to it, and is the fallback for a market
+    that carries no event. Both verified live.
+
+    Returns None rather than a half-built path when the slug is missing: a
+    link to `/market/` looks like a working button and lands on a 404.
+    """
+    try:
+        slug = (getattr(market, "slug", None) or "").strip()
+        if not slug:
+            return None
+        events = getattr(market, "events", None) or ()
+        event_slug = ""
+        if events:
+            event_slug = (getattr(events[0], "slug", None) or "").strip()
+        if event_slug:
+            return f"https://polymarket.com/event/{event_slug}/{slug}"
+        return f"https://polymarket.com/market/{slug}"
+    except Exception:
+        # Market models change shape between SDK versions; that should cost a
+        # link, not the screen the link was going to sit on.
+        return None
 
 
 def get_market_by_condition_id(client: SecureClient, condition_id: str) -> Market:

@@ -62,6 +62,7 @@ from polymarket_bot.markets import (
     get_spreads,
     is_tradable,
     list_tradable_markets,
+    market_url,
 )
 from polymarket_bot.notify import CollectingNotifier
 from polymarket_bot.rules import VALID_KINDS, ExitRule, RuleStore, evaluate_rule, make_rule
@@ -442,14 +443,38 @@ def positions(*, include_resolved: bool = False, client: SecureClient | None = N
 # market data
 # --------------------------------------------------------------------------
 @_safe
-def scan(*, limit: int = 20, keyword: str | None = None, client: SecureClient | None = None) -> dict:
-    """Tradable markets, tightest spread first. Ranks tradability, not odds."""
+def scan(
+    *,
+    limit: int = 20,
+    keyword: str | None = None,
+    sort: str = "spread",
+    client: SecureClient | None = None,
+) -> dict:
+    """Tradable markets. Ranks tradability or activity - never odds.
+
+    `sort="spread"` (the default, and what every existing caller gets) puts the
+    tightest spread first: cheapest to get in and out of.
+
+    `sort="hot"` orders by 24h volume instead - how much money actually moved.
+    That is popularity, not edge: a market can be the most traded on the venue
+    and still be a bad bet. It also makes keyword search materially better,
+    because the bounded sweep then walks markets people are trading rather than
+    an arbitrary slice of the venue.
+    """
     count = max(1, int(limit))
     needle = (keyword or "").strip().lower() or None
+    hot = str(sort).lower() == "hot"
 
     with _session(client) as (api, _settings):
         sweep = _KEYWORD_SWEEP if needle else count
-        markets = list_tradable_markets(api, limit=sweep)
+        markets = list_tradable_markets(
+            api,
+            limit=sweep,
+            # Only "hot" asks the API to order; "spread" is sorted below from
+            # live book data, which the API cannot sort by.
+            order="volume24hr" if hot else None,
+            ascending=False if hot else None,
+        )
         scanned = len(markets)
         truncated = needle is not None and scanned >= sweep
         if needle:
@@ -491,11 +516,20 @@ def scan(*, limit: int = 20, keyword: str | None = None, client: SecureClient | 
                 "days_left": days,
                 "end_date": market.state.end_date.isoformat() if market.state.end_date else None,
                 "accepting_orders": is_tradable(market),
+                "url": market_url(market),
             }
         )
 
-    # None sorts last: an unknown spread is not evidence of a good one.
-    rows.sort(key=lambda r: (r["spread"] is None, r["spread"] if r["spread"] is not None else 9.9))
+    if hot:
+        # The API already returned these volume-ordered; re-sorting here keeps
+        # the contract explicit and survives the keyword filter above, which
+        # preserves order but not the guarantee. None last, as below.
+        rows.sort(key=lambda r: (r["volume_24h"] is None, -(r["volume_24h"] or 0.0)))
+    else:
+        # None sorts last: an unknown spread is not evidence of a good one.
+        rows.sort(
+            key=lambda r: (r["spread"] is None, r["spread"] if r["spread"] is not None else 9.9)
+        )
     rows = rows[:count]
 
     if not rows:
@@ -532,8 +566,12 @@ def scan(*, limit: int = 20, keyword: str | None = None, client: SecureClient | 
         volume_str = f"${volume:,.0f}" if volume else "-"
         lines.append(f"{price_str:>5}  {spread_str:>7}  {volume_str:>10}  {_clip(row['question'], 44)}")
     lines.append("")
-    lines.append("Sorted by spread: tightest = cheapest to get in and out of. That is")
-    lines.append("tradability, not a view on which side wins.")
+    if hot:
+        lines.append("Sorted by 24h volume: how much money moved. That is popularity,")
+        lines.append("not edge - the most traded market can still be a bad bet.")
+    else:
+        lines.append("Sorted by spread: tightest = cheapest to get in and out of. That is")
+        lines.append("tradability, not a view on which side wins.")
     lines.append(f"! {advisor.DISCLAIMER}")
 
     return _ok(
@@ -542,6 +580,7 @@ def scan(*, limit: int = 20, keyword: str | None = None, client: SecureClient | 
         markets=rows,
         count=len(rows),
         keyword=keyword,
+        sort="hot" if hot else "spread",
         disclaimer=advisor.DISCLAIMER,
     )
 
