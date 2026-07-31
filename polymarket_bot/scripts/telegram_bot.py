@@ -22,12 +22,23 @@ from polymarket_bot.config import load_settings
 from polymarket_bot.notify import ConsoleNotifier
 from polymarket_bot.scripts._common import build_parser, dispatch, emit
 from polymarket_bot.telegram.bot import TelegramBot
+from polymarket_bot.telegram.singleton import AlreadyRunning, SingleInstance
 
 
 def _run(args: argparse.Namespace) -> int:
     settings = load_settings()
     if not settings.telegram_bot_token:
         emit("TELEGRAM_BOT_TOKEN is not set in .env - see .env.example.")
+        return 1
+
+    # One poller per token. Several copies long-polling at once get handed
+    # updates at random, so taps are answered by whichever process asked first
+    # - including one running older code. See telegram/singleton.py.
+    try:
+        lock = SingleInstance(settings)
+        lock.acquire()
+    except AlreadyRunning as exc:
+        emit(str(exc))
         return 1
 
     bot = TelegramBot(settings, notifier=ConsoleNotifier())
@@ -37,6 +48,7 @@ def _run(args: argparse.Namespace) -> int:
         emit("\nStopped.")
     finally:
         bot.close()
+        lock.release()
     return 0
 
 

@@ -75,6 +75,27 @@ Measured against live books on 2026-07-31, and the numbers drove the design:
 - Forecasting / correlated-market mispricing. Still not designed, and note the
   advisor stays deliberately non-predictive (`advisor.py`).
 
+## Running the bot (read before restarting it)
+
+**Only ever run ONE bot process.** Several pollers on one token get handed
+updates at random, so the owner's taps are answered by whichever process asked
+first — including one running older code. This produced "unknown command
+/menu" for a command that existed, and "this confirmation is no longer valid"
+for a freshly rendered button. `telegram/singleton.py` now refuses to start a
+second one; the lock lives at `data/telegram_bot.lock`.
+
+**Killing the shell does not kill the bot.** `venv/Scripts/python.exe` is a
+launcher that spawns the real interpreter as a *child*, so stopping the shell
+pipeline leaves that child polling. Four accumulated this way. To stop it:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+  Where-Object { $_.CommandLine -like '*telegram_bot*' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+Then confirm none remain before starting a new one.
+
 ## Security & Secrets
 - **Never ask the user to paste secrets into chat.** Not POLYMARKET_PRIVATE_KEY, wallet addresses, Telegram tokens, or anything from `.env`.
 - **Create `.env` from `.env.example`, don't expose it.** User fills their own values locally.
