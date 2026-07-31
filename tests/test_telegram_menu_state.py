@@ -108,6 +108,26 @@ def _scan(count=6):
     }
 
 
+
+def _analysis(question="Will thing 0 happen?", *, yes=0.6, no=0.4,
+              url="https://polymarket.com/event/ev/market-0"):
+    """The shape service.analysis returns - the market screen's data source."""
+    return {
+        "ok": True,
+        "analysis": {
+            "question": question, "slug": "market-0", "condition_id": "0x0", "url": url,
+            "tradable": True, "days_left": 14, "volume_24h": 1000.0, "liquidity": 500.0,
+            "daily_reward": 0.0, "spread": 0.01, "pair_cost": 1.01,
+            "yes": {"label": "Yes", "outcome": "yes", "price": yes, "exit_price": yes - 0.01,
+                    "depth_shares": 500.0, "round_trip": 0.01, "break_even": yes},
+            "no": {"label": "No", "outcome": "no", "price": no, "exit_price": no - 0.01,
+                   "depth_shares": 500.0, "round_trip": 0.01, "break_even": no},
+            "history": [0.55, 0.58, 0.6], "history_change": 0.05, "chart": "▁▄█",
+            "max_order_usdc": 5.0, "affordable_usdc": 5.0, "notes": [],
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # state leaking between Hot and Search
 # ---------------------------------------------------------------------------
@@ -172,7 +192,7 @@ def test_going_back_from_a_market_returns_to_the_list_it_came_from(bot_and_api):
     token = _first_market_token(api)
 
     briefing = {"ok": True, "text": "brief", "url": "https://polymarket.com/x"}
-    with mock.patch.object(bot_module.service, "briefing", return_value=briefing):
+    with mock.patch.object(bot_module.service, "analysis", return_value=_analysis()):
         bot._handle_update(_cb(f"nav:{menu_mod.VIEW_MARKET}:{token}"))
 
     back = [b for row in api.last_inline() for b in row
@@ -297,11 +317,9 @@ def test_the_detail_screen_buy_buttons_state_the_price_they_would_pay(bot_and_ap
         bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
     token = _first_market_token(api)
 
-    briefing = {
-        "ok": True, "text": "brief", "url": "https://polymarket.com/x",
-        "yes_price": 0.44, "no_price": 0.56,
-    }
-    with mock.patch.object(bot_module.service, "briefing", return_value=briefing):
+    with mock.patch.object(
+        bot_module.service, "analysis", return_value=_analysis(yes=0.44, no=0.56)
+    ):
         bot._handle_update(_cb(f"nav:{menu_mod.VIEW_MARKET}:{token}"))
 
     buy_labels = [

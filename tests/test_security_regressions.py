@@ -179,11 +179,13 @@ def test_tapping_cancel_orders_asks_before_doing_anything(bot_and_api):
 def test_the_confirmed_form_actually_cancels(bot_and_api):
     bot, api = bot_and_api
     with mock.patch.object(
-        bot_module.service, "cancel_orders", return_value={"ok": True, "text": "Cancelled 2."}
+        bot_module.service, "cancel_orders",
+        return_value={"ok": True, "canceled_count": 2, "not_canceled": {}},
     ) as spy:
         bot._handle_update(_cb(f"nav:{menu_mod.VIEW_MORE}:cancel!"))
     assert spy.called
-    assert "Cancelled 2." in api.all_text()
+    # Rendered from the structured count, in the owner's language.
+    assert "2" in api.all_text()
 
 
 def test_declining_the_confirmation_returns_to_the_menu_without_cancelling(bot_and_api):
@@ -209,10 +211,11 @@ def test_read_only_actions_still_run_on_one_tap(bot_and_api):
     # The confirmation must not have been applied to everything.
     bot, api = bot_and_api
     with mock.patch.object(
-        bot_module.service, "status", return_value={"ok": True, "text": "cash $21"}
+        bot_module.service, "status",
+        return_value={"ok": True, "portfolio": {"cash_usdc": 21.0}, "limits": {}},
     ) as spy:
         bot._handle_update(_cb(f"nav:{menu_mod.VIEW_MORE}:status"))
-    assert spy.called and "cash $21" in api.all_text()
+    assert spy.called and "21.00" in api.all_text()
 
 
 @pytest.mark.parametrize("bad", ["nan", "NaN", "inf", "-inf", "Infinity"])

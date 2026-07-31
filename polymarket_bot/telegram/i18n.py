@@ -196,6 +196,143 @@ _STRINGS: Final[dict[str, dict[str, str]]] = {
         "en": "Something went wrong: {error}",
         "he": "משהו השתבש: {error}",
     },
+    # ---- redeem / cancel -------------------------------------------------
+    "redeem.none": {
+        "en": "Nothing to redeem — no settled positions.",
+        "he": "אין מה לפדות — אין פוזיציות שהוכרעו.",
+    },
+    "redeem.done": {
+        "en": "✅ Redeemed {count} market(s) for {amount}.",
+        "he": "✅ נפדו {count} שווקים תמורת {amount}.",
+    },
+    "redeem.worthless": {
+        "en": "Those resolved against you — redeeming pays $0 and just clears the list.",
+        "he": "אלה הוכרעו נגדך — הפדיון משלם $0 ורק מנקה את הרשימה.",
+    },
+    "redeem.failed": {
+        "en": "⚠️ {count} could not be redeemed.",
+        "he": "⚠️ {count} לא נפדו.",
+    },
+    "cancel.done": {
+        "en": "✅ Cancelled {count} resting order(s).",
+        "he": "✅ בוטלו {count} הזמנות ממתינות.",
+    },
+    "cancel.stuck": {
+        "en": "⚠️ {count} are STILL on the book.",
+        "he": "⚠️ {count} עדיין בספר.",
+    },
+    # ---- status ----------------------------------------------------------
+    "status.title": {"en": "📈 Account", "he": "📈 חשבון"},
+    "status.cash": {"en": "Cash        {amount}", "he": "מזומן       {amount}"},
+    "status.value": {"en": "Total       {amount}", "he": "סה\"כ        {amount}"},
+    "status.positions": {"en": "Positions   {count}", "he": "פוזיציות    {count}"},
+    "status.pnl": {"en": "Unrealized  {amount}", "he": "רווח פתוח   {amount}"},
+    "status.redeemable": {
+        "en": "Redeemable  {count} worth {amount}",
+        "he": "לפדיון      {count} בשווי {amount}",
+    },
+    "status.orders": {"en": "Resting     {count} order(s)", "he": "ממתינות     {count} הזמנות"},
+    "status.limits": {
+        "en": "Limits: {order}/order · {market}/market · {daily}/day loss",
+        "he": "מגבלות: {order} להזמנה · {market} לשוק · {daily} הפסד יומי",
+    },
+    "status.rules": {"en": "Exit rules: {count}", "he": "כללי יציאה: {count}"},
+    "status.dry_run": {"en": "monitor DRY RUN", "he": "מוניטור בהרצה יבשה"},
+    # ---- record ----------------------------------------------------------
+    "record.title": {"en": "📉 Your record", "he": "📉 הביצועים שלך"},
+    "record.none": {"en": "No completed trades yet.", "he": "אין עדיין עסקאות שהושלמו."},
+    "record.trades": {
+        "en": "{count} trades · {wins}W / {losses}L",
+        "he": "{count} עסקאות · {wins} ניצחונות / {losses} הפסדים",
+    },
+    "record.hit_rate": {"en": "Hit rate    {pct}%", "he": "אחוז הצלחה  {pct}%"},
+    "record.net": {"en": "Net P&L     {amount}", "he": "רווח נטו    {amount}"},
+    "record.best": {"en": "Best        {amount}", "he": "הטובה ביותר {amount}"},
+    "record.worst": {"en": "Worst       {amount}", "he": "הגרועה      {amount}"},
+    "record.insights": {"en": "What stands out:", "he": "מה בולט:"},
+    # ---- rules -----------------------------------------------------------
+    "rules.none": {"en": "No exit rules stored.", "he": "אין כללי יציאה שמורים."},
+    "rules.title": {"en": "🎯 Exit rules ({count})", "he": "🎯 כללי יציאה ({count})"},
+    "rules.row": {
+        "en": "• {kind} {outcome} @ {target} — {title}",
+        "he": "• {kind} {outcome} @ {target} — {title}",
+    },
+    "rules.dry_run": {
+        "en": "⚠️ Monitor is in DRY RUN — these are watched, not executed.",
+        "he": "⚠️ המוניטור בהרצה יבשה — הכללים נצפים, לא מבוצעים.",
+    },
+    # ---- monitor ---------------------------------------------------------
+    "monitor.title": {"en": "👁 Monitor sweep", "he": "👁 סריקת מוניטור"},
+    "monitor.swept": {
+        "en": "Checked {positions} position(s), {rules} rule(s).",
+        "he": "נבדקו {positions} פוזיציות, {rules} כללים.",
+    },
+    "monitor.quiet": {"en": "Nothing triggered.", "he": "שום כלל לא הופעל."},
+    "monitor.fired": {"en": "🔔 {kind} fired — {title}", "he": "🔔 {kind} הופעל — {title}"},
+    "monitor.halted": {
+        "en": "⚠️ Execution halted — daily loss limit reached.",
+        "he": "⚠️ הביצוע נעצר — הגעת למגבלת ההפסד היומית.",
+    },
+    "monitor.errors": {"en": "⚠️ {count} error(s) this sweep.", "he": "⚠️ {count} שגיאות בסריקה."},
+    # ---- market analysis (the deep screen) -------------------------------
+    "an.prices": {"en": "── PRICE ──", "he": "── מחיר ──"},
+    "an.side": {
+        "en": "{label}: {price}  →  market says {implied}% likely",
+        "he": "{label}: {price}  ←  השוק מעריך {implied}% סיכוי",
+    },
+    "an.side_unpriced": {
+        "en": "{label}: no price on the book",
+        "he": "{label}: אין מחיר בספר",
+    },
+    "an.implied_note": {
+        "en": "A share pays $1 if it wins, $0 if it loses. The price IS the odds.",
+        "he": "מניה משלמת $1 אם ניצחה, $0 אם הפסידה. המחיר הוא ההסתברות.",
+    },
+    "an.chart_title": {"en": "── LAST 24H ──", "he": "── 24 השעות האחרונות ──"},
+    "an.chart_range": {
+        "en": "low {low} · high {high} · change {change}",
+        "he": "נמוך {low} · גבוה {high} · שינוי {change}",
+    },
+    "an.cost": {"en": "── WHAT TRADING IT COSTS ──", "he": "── כמה עולה לסחור ──"},
+    "an.round_trip": {
+        "en": "Round trip costs {amount} — buy at the ask, sell at the bid.",
+        "he": "הלוך-חזור עולה {amount} — קונים ב-ask, מוכרים ב-bid.",
+    },
+    "an.break_even": {
+        "en": "So it must hold above {price} just to break even.",
+        "he": "כלומר צריך להישאר מעל {price} רק כדי לצאת בלי הפסד.",
+    },
+    "an.spread": {"en": "Spread {amount}", "he": "מרווח {amount}"},
+    "an.pair": {
+        "en": "YES+NO = {amount} (100¢ is fair; above that is the spread)",
+        "he": "כן+לא = {amount} (100 אגורות זה הוגן; מעבר לזה זה המרווח)",
+    },
+    "an.depth": {
+        "en": "Book can absorb ~{shares} shares near the quote.",
+        "he": "הספר סופג ~{shares} מניות ליד המחיר המוצג.",
+    },
+    "an.volume": {"en": "24h volume {amount}", "he": "מחזור 24ש {amount}"},
+    "an.days": {"en": "Resolves in {days} day(s)", "he": "מוכרע בעוד {days} ימים"},
+    "an.ends_today": {"en": "Resolves today", "he": "מוכרע היום"},
+    "an.rewards": {
+        "en": "Pays ~{amount}/day to liquidity providers (shared by all).",
+        "he": "משלם ~{amount} ליום לספקי נזילות (מתחלק בין כולם).",
+    },
+    "an.your_size": {
+        "en": "── YOUR SIZE ──\nYou could put in up to {amount} here.",
+        "he": "── הגודל שלך ──\nאתה יכול להשקיע כאן עד {amount}.",
+    },
+    "an.your_shares": {"en": "That is about {shares} shares.", "he": "זה בערך {shares} מניות."},
+    "an.disclaimer": {
+        "en": (
+            "This describes the market's structure — price, cost, liquidity. "
+            "It does NOT say which side wins. Nothing here predicts an outcome."
+        ),
+        "he": (
+            "זה מתאר את מבנה השוק — מחיר, עלות, נזילות. "
+            "זה לא אומר איזה צד ינצח. שום דבר כאן לא מנבא תוצאה."
+        ),
+    },
     "msg.hot_note": {
         "en": "Sorted by 24h volume - how much money moved, not how likely it is to pay.",
         "he": "ממוין לפי מחזור 24 שעות - כמה כסף עבר, לא כמה סביר שירוויח.",

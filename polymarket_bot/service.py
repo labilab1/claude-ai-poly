@@ -50,6 +50,7 @@ from typing import Any, ParamSpec
 from polymarket import Market, SecureClient
 
 from polymarket_bot import advisor, portfolio, trading
+from polymarket_bot import analysis as analysis_mod
 from polymarket_bot import arbitrage as arbitrage_mod
 from polymarket_bot.analytics import find_opportunities, get_insights, get_trade_stats
 from polymarket_bot.client import get_client
@@ -625,6 +626,33 @@ def briefing(market_ref: str, *, client: SecureClient | None = None) -> dict:
         no_price=_num(market.outcomes.no.price),
         yes_label=market.outcomes.yes.label,
         no_label=market.outcomes.no.label,
+        disclaimer=advisor.DISCLAIMER,
+    )
+
+
+@_safe
+def analysis(market_ref: str, *, client: SecureClient | None = None) -> dict:
+    """Everything worth knowing about one market, in one call.
+
+    The deep screen behind a market in the chat: price and what it implies,
+    round-trip cost and the break-even that follows from it, reachable depth,
+    a 24h price series, and what the account's own limits allow here.
+
+    Structure only. It does not say which side wins - see `analysis.py`.
+    """
+    with _session(client) as (api, settings):
+        market = _resolve_market(api, market_ref)
+        try:
+            cash = portfolio.get_cash_balance(api)
+        except Exception:
+            # A missing balance costs the "your size" line, not the screen.
+            cash = None
+        report = analysis_mod.analyse(api, market, settings, cash_usdc=cash)
+
+    return _ok(
+        "analysis",
+        report.question,
+        analysis=report.to_dict(),
         disclaimer=advisor.DISCLAIMER,
     )
 

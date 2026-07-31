@@ -29,6 +29,26 @@ def _settings(tmp: Path) -> Settings:
     )
 
 
+
+def _analysis(question="Will thing 0 happen?", *, yes=0.6, no=0.4,
+              url="https://polymarket.com/event/ev/market-0"):
+    """The shape service.analysis returns - the market screen's data source."""
+    return {
+        "ok": True,
+        "analysis": {
+            "question": question, "slug": "market-0", "condition_id": "0x0", "url": url,
+            "tradable": True, "days_left": 14, "volume_24h": 1000.0, "liquidity": 500.0,
+            "daily_reward": 0.0, "spread": 0.01, "pair_cost": 1.01,
+            "yes": {"label": "Yes", "outcome": "yes", "price": yes, "exit_price": yes - 0.01,
+                    "depth_shares": 500.0, "round_trip": 0.01, "break_even": yes},
+            "no": {"label": "No", "outcome": "no", "price": no, "exit_price": no - 0.01,
+                   "depth_shares": 500.0, "round_trip": 0.01, "break_even": no},
+            "history": [0.55, 0.58, 0.6], "history_change": 0.05, "chart": "▁▄█",
+            "max_order_usdc": 5.0, "affordable_usdc": 5.0, "notes": [],
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # store
 # ---------------------------------------------------------------------------
@@ -222,7 +242,7 @@ def _open_market(bot, api):
 def test_watching_a_market_from_its_detail_screen(bot_and_api):
     bot, api = bot_and_api
     token = _open_market(bot, api)
-    with mock.patch.object(bot_module.service, "briefing", return_value=_BRIEF):
+    with mock.patch.object(bot_module.service, "analysis", return_value=_analysis()):
         bot._handle_update(_cb(f"nav:{menu_mod.VIEW_MARKET}:{token}"))
         bot._handle_update(_cb(f"nav:{menu_mod.VIEW_WATCH}:{token}"))
     assert bot._watchlist.list(OWNER) == ["market-0"]
@@ -232,7 +252,7 @@ def test_watching_a_market_from_its_detail_screen(bot_and_api):
 def test_the_detail_button_flips_to_stop_watching(bot_and_api):
     bot, api = bot_and_api
     token = _open_market(bot, api)
-    with mock.patch.object(bot_module.service, "briefing", return_value=_BRIEF):
+    with mock.patch.object(bot_module.service, "analysis", return_value=_analysis()):
         bot._handle_update(_cb(f"nav:{menu_mod.VIEW_WATCH}:{token}"))
         bot._handle_update(_cb(f"nav:{menu_mod.VIEW_MARKET}:{token}"))
     labels = [b["text"] for row in api.last_inline() for b in row]
@@ -246,6 +266,9 @@ def test_an_empty_watchlist_says_how_to_fill_it(bot_and_api):
 
 
 def test_the_watchlist_screen_lists_watched_markets(bot_and_api):
+    # The watchlist uses `briefing`, not `analysis`: it renders one row per
+    # bookmark, and `analysis` costs two order-book reads plus price history
+    # per market. On 25 bookmarks that is a screen nobody waits for.
     bot, api = bot_and_api
     bot._watchlist.toggle(OWNER, "market-0")
     with mock.patch.object(bot_module.service, "briefing", return_value=_BRIEF):

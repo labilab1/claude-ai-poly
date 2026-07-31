@@ -116,6 +116,26 @@ def _scan_result(count=7):
     }
 
 
+
+def _analysis(question="Will thing 0 happen?", *, yes=0.6, no=0.4,
+              url="https://polymarket.com/event/ev/market-0"):
+    """The shape service.analysis returns - the market screen's data source."""
+    return {
+        "ok": True,
+        "analysis": {
+            "question": question, "slug": "market-0", "condition_id": "0x0", "url": url,
+            "tradable": True, "days_left": 14, "volume_24h": 1000.0, "liquidity": 500.0,
+            "daily_reward": 0.0, "spread": 0.01, "pair_cost": 1.01,
+            "yes": {"label": "Yes", "outcome": "yes", "price": yes, "exit_price": yes - 0.01,
+                    "depth_shares": 500.0, "round_trip": 0.01, "break_even": yes},
+            "no": {"label": "No", "outcome": "no", "price": no, "exit_price": no - 0.01,
+                   "depth_shares": 500.0, "round_trip": 0.01, "break_even": no},
+            "history": [0.55, 0.58, 0.6], "history_change": 0.05, "chart": "▁▄█",
+            "max_order_usdc": 5.0, "affordable_usdc": 5.0, "notes": [],
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # navigation
 # ---------------------------------------------------------------------------
@@ -173,10 +193,11 @@ def test_tapping_details_opens_the_briefing(bot_and_api):
 
     briefing = {"ok": True, "text": "* Will thing 0 happen?\n  ~60% implied",
                 "url": "https://polymarket.com/event/ev/market-0"}
-    with mock.patch.object(bot_module.service, "briefing", return_value=briefing) as spy:
+    with mock.patch.object(bot_module.service, "analysis", return_value=_analysis()) as spy:
         bot._handle_update(_cb(f"nav:{menu_mod.VIEW_MARKET}:{token}"))
     assert spy.call_args.args[0] == "market-0", "the token did not resolve to its market"
-    assert "60% implied" in api.all_text()
+    assert "Will thing 0 happen?" in api.all_text()
+    assert "60%" in api.all_text()
 
 
 def test_a_token_from_a_previous_run_is_reported_not_crashed(bot_and_api):
@@ -382,7 +403,7 @@ def test_a_pasted_market_url_opens_that_market(bot_and_api):
     bot, api = bot_and_api
     url = "https://polymarket.com/event/ev/will-thing-0-happen"
     briefing = {"ok": True, "text": "brief", "url": url}
-    with mock.patch.object(bot_module.service, "briefing", return_value=briefing) as spy:
+    with mock.patch.object(bot_module.service, "analysis", return_value=_analysis()) as spy:
         bot._handle_update(_msg(url))
     assert spy.call_args.args[0] == url
 

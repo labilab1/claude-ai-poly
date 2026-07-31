@@ -56,6 +56,7 @@ from polymarket_bot.config import Settings
 from polymarket_bot.notify import ConsoleNotifier, Notifier
 from polymarket_bot.scripts._common import with_disclaimer
 from polymarket_bot.telegram import menu as menu_mod
+from polymarket_bot.telegram import screens
 from polymarket_bot.telegram.api import (
     MESSAGE_LIMIT,
     TelegramAPI,
@@ -958,22 +959,26 @@ class TelegramBot:
             self._show_list(chat_id, session, sort="hot", page=0)
             return
 
-        result = service.briefing(ref, client=self.client)
+        # The one screen meant to be long: the owner asked for the full picture
+        # here, and only here. `analysis` gathers price, cost, depth, history
+        # and what this account could actually put in.
+        result = service.analysis(ref, client=self.client)
         if not result.get("ok"):
             self._send(
                 chat_id, t("msg.error", session.lang, error=str(result.get("error"))), session
             )
             return
 
-        text = with_disclaimer(str(result.get("text") or ""))
+        report = result.get("analysis") or {}
+        text = screens.market_analysis(report, session.lang)
         back = menu_mod.VIEW_SEARCH if session.query else menu_mod.VIEW_HOT
         keyboard = menu_mod.market_keyboard(
             token,
-            result.get("url"),
+            report.get("url"),
             lang=session.lang,
             back_view=back,
-            yes_price=result.get("yes_price"),
-            no_price=result.get("no_price"),
+            yes_price=(report.get("yes") or {}).get("price"),
+            no_price=(report.get("no") or {}).get("price"),
             watching=self._watchlist.contains(chat_id, ref),
         )
         self._render(chat_id, session, text, keyboard)
@@ -1009,21 +1014,29 @@ class TelegramBot:
             self._send(chat_id, t("msg.welcome", lang), session)
             return
 
+        # Each entry is (call, renderer). The renderer turns the structured
+        # response into short text in the owner's language - the response's own
+        # `text` field is an English terminal report, which is the wrong shape
+        # for a phone and does not translate. See telegram/screens.py.
         actions = {
-            "status": lambda: service.status(client=self.client),
+            "status": (lambda: service.status(client=self.client), screens.status),
             # list_rules reads the local rule store; it takes no client.
-            "rules": lambda: service.list_rules(),
-            "analyze": lambda: service.analytics(client=self.client),
-            "monitor": lambda: service.monitor_once(client=self.client),
-            "redeem": lambda: service.redeem(client=self.client),
-            "cancel": lambda: service.cancel_orders(client=self.client),
+            "rules": (lambda: service.list_rules(), screens.rules),
+            "analyze": (lambda: service.analytics(client=self.client), screens.analytics),
+            "monitor": (lambda: service.monitor_once(client=self.client), screens.monitor),
+            "redeem": (lambda: service.redeem(client=self.client), screens.redeem),
+            "cancel": (lambda: service.cancel_orders(client=self.client), screens.cancel),
         }
-        action = actions.get(name)
-        if action is None:
-            self._send(chat_id, t("msg.welcome", lang), session)
+        entry = actions.get(name)
+        if entry is None:
+            self._show_guarded(chat_id, session, menu_mod.VIEW_HOME, "")
             return
-        result = action()
-        self._send(chat_id, str(result.get("text") or ""), session)
+        call, render = entry
+        result = call()
+        self._render(
+            chat_id, session, render(result, lang),
+            menu_mod.text_screen_keyboard(lang, back=menu_mod.VIEW_MORE),
+        )
 
     def _toggle_language(self, chat_id: int, session: menu_mod.MenuSession) -> None:
         session.lang = toggled(session.lang)
