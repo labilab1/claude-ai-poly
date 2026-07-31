@@ -29,7 +29,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from polymarket_bot.telegram.i18n import t
+from polymarket_bot.telegram.i18n import LANGUAGES, t
 
 #: Telegram's cap on callback_data, in bytes.
 PAYLOAD_LIMIT = 64
@@ -97,6 +97,9 @@ class MenuSession:
     last_render: tuple[str, str] | None = None
     #: Where Back should go from the market screen.
     back_view: str = VIEW_HOME
+    #: Whether the leftover reply keyboard from the previous version has been
+    #: removed for this chat yet. Telegram keeps one until told otherwise.
+    legacy_keyboard_cleared: bool = False
     touched_at: float = field(default_factory=time.monotonic)
 
     def touch(self) -> None:
@@ -204,41 +207,68 @@ def parse_nav(token: str) -> tuple[str, str]:
 # --------------------------------------------------------------------------
 
 
-def reply_labels(lang: str) -> dict[str, str]:
-    """Deprecated: the reply keyboard is gone.
+def legacy_reply_labels() -> dict[str, str]:
+    """Labels from the OLD reply keyboard, mapped to the views they opened.
 
-    Kept as an empty mapping so any straggling caller degrades to "this text is
-    not a menu button" instead of raising. The menu is inline-only now - see
-    `home_keyboard` for why.
+    Telegram keeps a reply keyboard on the client until it is explicitly
+    removed, and the bot cannot see that it is still there. So a chat that used
+    the previous version still has those four buttons pinned at the bottom,
+    and tapping one sends its label as ordinary text.
+
+    Removing the keyboard (see `TelegramBot._clear_legacy_keyboard`) fixes it
+    going forward, but a tap can arrive before that happens. Recognising the
+    labels means such a tap still navigates instead of dumping the owner on
+    the home screen.
     """
-    return {}
+    mapping: dict[str, str] = {}
+    for language in LANGUAGES:
+        mapping[t("menu.hot", language)] = VIEW_HOT
+        mapping[t("menu.search", language)] = VIEW_SEARCH
+        mapping[t("menu.portfolio", language)] = VIEW_PORTFOLIO
+        mapping[t("menu.more", language)] = VIEW_MORE
+    return mapping
 
 
 def home_keyboard(lang: str) -> dict:
-    """The dashboard. Every destination is one tap from here.
+    """The dashboard. Everything the bot can do is one tap from here.
 
     Inline, not a reply keyboard: an inline tap fires a callback_query, which
     posts NOTHING into the chat. A reply keyboard sends the button's label as
     a message from the user, which fills the conversation with your own words
     and does not read as an application.
+
+    Laid out two per row and grouped by purpose - find, hold, act, configure -
+    so the grid is scannable rather than an undifferentiated block.
     """
     return {
         "inline_keyboard": [
+            # Find something to trade.
             [
                 {"text": t("menu.hot", lang), "callback_data": nav(VIEW_HOT, "0")},
                 {"text": t("menu.search", lang), "callback_data": nav(VIEW_SEARCH, "")},
             ],
             [
-                {"text": t("menu.portfolio", lang), "callback_data": nav(VIEW_PORTFOLIO, "")},
+                {"text": t("btn.arb", lang), "callback_data": nav(VIEW_ARB, "")},
                 {"text": t("btn.watchlist", lang), "callback_data": nav(VIEW_WATCHLIST, "")},
             ],
+            # What you already hold.
             [
-                {"text": t("btn.arb", lang), "callback_data": nav(VIEW_ARB, "")},
-                {"text": t("btn.analyze", lang), "callback_data": nav(VIEW_MORE, "analyze")},
+                {"text": t("menu.portfolio", lang), "callback_data": nav(VIEW_PORTFOLIO, "")},
+                {"text": t("btn.rules", lang), "callback_data": nav(VIEW_MORE, "rules")},
             ],
             [
-                {"text": t("menu.more", lang), "callback_data": nav(VIEW_MORE, "")},
-                {"text": t("btn.refresh", lang), "callback_data": nav(VIEW_HOME, "")},
+                {"text": t("btn.analyze", lang), "callback_data": nav(VIEW_MORE, "analyze")},
+                {"text": t("btn.status", lang), "callback_data": nav(VIEW_MORE, "status")},
+            ],
+            # Act.
+            [
+                {"text": t("btn.redeem", lang), "callback_data": nav(VIEW_MORE, "redeem")},
+                {"text": t("btn.monitor", lang), "callback_data": nav(VIEW_MORE, "monitor")},
+            ],
+            # Configure.
+            [
+                {"text": t("btn.settings", lang), "callback_data": nav(VIEW_MORE, "")},
+                {"text": t("btn.refresh", lang), "callback_data": nav(VIEW_HOME, "r")},
             ],
         ]
     }

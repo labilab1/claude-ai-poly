@@ -281,6 +281,16 @@ class TelegramBot:
         # canvas would put the answer above the question. Start a fresh one.
         session.canvas_id = None
 
+        # A tap on the leftover reply keyboard arrives here as plain text. Take
+        # it as the navigation it was meant to be, and remove the keyboard so
+        # the next tap is a real button.
+        legacy_view = menu_mod.legacy_reply_labels().get(text)
+        if legacy_view is not None:
+            self._clear_legacy_keyboard(chat_id, session)
+            session.clear_prompt()
+            self._show_guarded(chat_id, session, legacy_view, "")
+            return
+
         awaiting = session.awaiting
         if awaiting == menu_mod.AWAIT_SEARCH:
             session.clear_prompt()
@@ -303,6 +313,34 @@ class TelegramBot:
     def _session(self, chat_id: int) -> menu_mod.MenuSession:
         session = self._sessions.get(chat_id, lang=load_lang(self.settings, chat_id))
         return session
+
+    def _clear_legacy_keyboard(self, chat_id: int, session: menu_mod.MenuSession) -> None:
+        """Remove the reply keyboard left over from the previous version.
+
+        Telegram keeps a reply keyboard on the client until a message
+        explicitly removes it, and the bot cannot see that it is still there.
+        Deleting the code that sent it was therefore not enough: a chat that
+        used the old menu still has those four buttons pinned above the input
+        box, and tapping one posts its label as a message.
+
+        A markup can only ride on a message, so the removal is sent as a
+        throwaway which is deleted immediately - the keyboard goes, and no
+        clutter is left behind. Once per session; failures are ignored because
+        a stale keyboard is a cosmetic problem, not a reason to fail a screen.
+        """
+        if session.legacy_keyboard_cleared:
+            return
+        session.legacy_keyboard_cleared = True
+        try:
+            sent = self.api.send_message(
+                chat_id, t("msg.keyboard_cleared", session.lang),
+                reply_markup={"remove_keyboard": True},
+            )
+            message_id = sent.get("message_id")
+            if message_id is not None:
+                self.api.delete_message(chat_id, message_id)
+        except Exception as exc:
+            self._log(f"could not clear the old reply keyboard: {exc}", "debug")
 
     def _render(
         self,
@@ -543,7 +581,13 @@ class TelegramBot:
         session.query = None
         session.clear_prompt()
 
-        lines = [t("home.title", lang), ""]
+        lines = [t("home.title", lang)]
+        # The deposit wallet, in full so it can be tapped and copied - it is a
+        # public address, and the one number people want to check against the
+        # website. The private key is never touched here.
+        lines.append(self.settings.wallet)
+        lines.append("")
+
         result = service.status(client=self.client)
         if result.get("ok"):
             summary = result.get("portfolio") or {}
@@ -959,6 +1003,9 @@ class TelegramBot:
         session.clear_prompt()
         session.query = None
         session.canvas_id = None
+        # /start is how someone with the old keyboard still pinned gets rid of
+        # it, so this runs before the dashboard is drawn.
+        self._clear_legacy_keyboard(chat_id, session)
         self._show_guarded(chat_id, session, menu_mod.VIEW_HOME, "")
 
     def _cmd_arb(self, chat_id: int, args: list[str]) -> None:

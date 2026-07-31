@@ -122,6 +122,9 @@ class TelegramAPI:
             params["text"] = text[:200]
         return self._call("answerCallbackQuery", params=params)
 
+    def delete_message(self, chat_id: int | str, message_id: int) -> dict:
+        return self._call("deleteMessage", params={"chat_id": chat_id, "message_id": message_id})
+
     def get_me(self) -> dict:
         return self._call("getMe")
 

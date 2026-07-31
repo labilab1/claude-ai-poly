@@ -55,8 +55,12 @@ _STRINGS: Final[dict[str, dict[str, str]]] = {
         "he": "⚠️ המוניטור בהרצה יבשה - כללי היציאה נצפים, לא מבוצעים.",
     },
     "home.hint": {
-        "en": "Pick a destination:",
-        "he": "בחר יעד:",
+        "en": "Tap Refresh to update the balance.",
+        "he": "לחץ רענן כדי לעדכן את היתרה.",
+    },
+    "msg.keyboard_cleared": {
+        "en": "…",
+        "he": "…",
     },
     # ---- screen titles ---------------------------------------------------
     "title.hot": {"en": "🔥 Hot markets", "he": "🔥 שווקים חמים"},
@@ -101,6 +105,7 @@ _STRINGS: Final[dict[str, dict[str, str]]] = {
     "btn.cancel_orders": {"en": "🚫 Cancel orders", "he": "🚫 בטל הזמנות"},
     "btn.help": {"en": "❓ Help", "he": "❓ עזרה"},
     "btn.home": {"en": "🏠 Home", "he": "🏠 ראשי"},
+    "btn.settings": {"en": "⚙️ Settings", "he": "⚙️ הגדרות"},
     "btn.confirm_yes": {"en": "✅ Yes, do it", "he": "✅ כן, בצע"},
     "btn.confirm_no": {"en": "✖ No, go back", "he": "✖ לא, חזור"},
     # ---- confirmations for irreversible actions --------------------------
