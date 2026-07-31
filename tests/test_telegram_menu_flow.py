@@ -25,10 +25,14 @@ STRANGER = 999
 
 
 class FakeAPI:
+    """Tracks the canvas the way Telegram does: sends create it, edits replace
+    its contents in place. `screens` is every screen the user actually saw."""
+
     def __init__(self) -> None:
         self.sent: list[dict] = []
         self.edits: list[dict] = []
         self.acks: list[dict] = []
+        self.screens: list[dict] = []
         self._next_id = 100
 
     def get_me(self):
@@ -39,12 +43,17 @@ class FakeAPI:
 
     def send_message(self, chat_id, text, *, reply_markup=None):
         self._next_id += 1
-        self.sent.append({"chat_id": chat_id, "text": text, "reply_markup": reply_markup,
-                          "message_id": self._next_id})
+        entry = {"chat_id": chat_id, "text": text, "reply_markup": reply_markup,
+                 "message_id": self._next_id}
+        self.sent.append(entry)
+        self.screens.append(entry)
         return {"message_id": self._next_id}
 
     def edit_message_text(self, chat_id, message_id, text, *, reply_markup=None):
-        self.edits.append({"chat_id": chat_id, "message_id": message_id, "text": text})
+        entry = {"chat_id": chat_id, "message_id": message_id, "text": text,
+                 "reply_markup": reply_markup}
+        self.edits.append(entry)
+        self.screens.append(entry)
         return {}
 
     def answer_callback_query(self, callback_query_id, *, text=None, show_alert=False):
@@ -53,13 +62,13 @@ class FakeAPI:
 
     # helpers
     def last_text(self) -> str:
-        return self.sent[-1]["text"] if self.sent else ""
+        return self.screens[-1]["text"] if self.screens else ""
 
     def all_text(self) -> str:
-        return "\n".join(s["text"] for s in self.sent)
+        return "\n".join(s["text"] for s in self.screens)
 
     def last_inline(self) -> list:
-        for entry in reversed(self.sent):
+        for entry in reversed(self.screens):
             markup = entry.get("reply_markup") or {}
             if "inline_keyboard" in markup:
                 return markup["inline_keyboard"]
@@ -112,16 +121,24 @@ def _scan_result(count=7):
 # ---------------------------------------------------------------------------
 
 
-def test_start_shows_the_persistent_keyboard(bot_and_api):
+def test_start_opens_the_dashboard(bot_and_api):
     bot, api = bot_and_api
-    bot._handle_update(_msg("/start"))
-    assert "keyboard" in (api.sent[-1]["reply_markup"] or {})
+    with mock.patch.object(
+        bot_module.service, "status",
+        return_value={"ok": True, "portfolio": {"cash_usdc": 21.62, "total_value": 21.62,
+                                                "open_positions": 0}},
+    ):
+        bot._handle_update(_msg("/start"))
+    assert "21.62" in api.last_text(), "the dashboard did not show the balance"
+    markup = api.sent[-1]["reply_markup"] or {}
+    assert "inline_keyboard" in markup, "home must be inline so taps post nothing"
+    assert "keyboard" not in markup
 
 
 def test_tapping_hot_renders_a_market_list(bot_and_api):
     bot, api = bot_and_api
     with mock.patch.object(bot_module.service, "scan", return_value=_scan_result()):
-        bot._handle_update(_msg(t("menu.hot", "en")))
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
     text = api.all_text()
     assert "Will thing 0 happen?" in text
     assert "60%" in text          # 0.6 implied probability
@@ -133,7 +150,7 @@ def test_tapping_hot_renders_a_market_list(bot_and_api):
 def test_a_list_page_offers_details_and_a_link_per_row(bot_and_api):
     bot, api = bot_and_api
     with mock.patch.object(bot_module.service, "scan", return_value=_scan_result()):
-        bot._handle_update(_msg(t("menu.hot", "en")))
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
     rows = api.last_inline()
     first = rows[0]
     assert any(b.get("callback_data", "").startswith("nav:mkt:") for b in first)
@@ -143,7 +160,7 @@ def test_a_list_page_offers_details_and_a_link_per_row(bot_and_api):
 def test_pagination_moves_to_the_next_page(bot_and_api):
     bot, api = bot_and_api
     with mock.patch.object(bot_module.service, "scan", return_value=_scan_result(count=12)):
-        bot._handle_update(_msg(t("menu.hot", "en")))
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
         bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:1"))
     assert "6. Will thing 5 happen?" in api.all_text()
 
@@ -151,7 +168,7 @@ def test_pagination_moves_to_the_next_page(bot_and_api):
 def test_tapping_details_opens_the_briefing(bot_and_api):
     bot, api = bot_and_api
     with mock.patch.object(bot_module.service, "scan", return_value=_scan_result()):
-        bot._handle_update(_msg(t("menu.hot", "en")))
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
     token = api.last_inline()[0][0]["callback_data"].split(":")[-1]
 
     briefing = {"ok": True, "text": "* Will thing 0 happen?\n  ~60% implied",
@@ -175,7 +192,7 @@ def test_a_token_from_a_previous_run_is_reported_not_crashed(bot_and_api):
 
 def test_search_prompts_then_uses_the_typed_keyword(bot_and_api):
     bot, api = bot_and_api
-    bot._handle_update(_msg(t("menu.search", "en")))
+    bot._handle_update(_cb(f"nav:{menu_mod.VIEW_SEARCH}:"))
     assert "keyword" in api.last_text().lower()
 
     with mock.patch.object(bot_module.service, "scan", return_value=_scan_result(count=2)) as spy:
@@ -187,16 +204,16 @@ def test_search_prompts_then_uses_the_typed_keyword(bot_and_api):
 
 def test_a_keyboard_tap_cancels_an_outstanding_prompt(bot_and_api):
     bot, api = bot_and_api
-    bot._handle_update(_msg(t("menu.search", "en")))
+    bot._handle_update(_cb(f"nav:{menu_mod.VIEW_SEARCH}:"))
     with mock.patch.object(bot_module.service, "scan", return_value=_scan_result()) as spy:
-        bot._handle_update(_msg(t("menu.hot", "en")))
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
     # Navigating away must not be read as the search keyword.
     assert spy.call_args.kwargs["keyword"] is None
 
 
 def test_an_empty_search_result_explains_itself(bot_and_api):
     bot, api = bot_and_api
-    bot._handle_update(_msg(t("menu.search", "en")))
+    bot._handle_update(_cb(f"nav:{menu_mod.VIEW_SEARCH}:"))
     with mock.patch.object(
         bot_module.service, "scan", return_value={"ok": True, "markets": [], "text": ""}
     ):
@@ -214,7 +231,7 @@ def test_buying_from_the_menu_still_requires_confirm(bot_and_api):
     Tapping Buy and typing an amount prices the order and sends nothing."""
     bot, api = bot_and_api
     with mock.patch.object(bot_module.service, "scan", return_value=_scan_result()):
-        bot._handle_update(_msg(t("menu.hot", "en")))
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
     token = api.last_inline()[0][0]["callback_data"].split(":")[-1]
 
     # Tap "Buy YES" -> the bot asks for an amount, prices nothing yet.
@@ -244,7 +261,7 @@ def test_buying_from_the_menu_still_requires_confirm(bot_and_api):
 def test_buy_no_button_selects_the_no_outcome(bot_and_api):
     bot, api = bot_and_api
     with mock.patch.object(bot_module.service, "scan", return_value=_scan_result()):
-        bot._handle_update(_msg(t("menu.hot", "en")))
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
     token = api.last_inline()[0][0]["callback_data"].split(":")[-1]
 
     bot._handle_update(_cb(f"nav:{menu_mod.VIEW_BUY}:n{token}"))
@@ -257,7 +274,7 @@ def test_buy_no_button_selects_the_no_outcome(bot_and_api):
 def test_a_bad_amount_is_rejected_without_pricing_anything(bot_and_api, bad):
     bot, api = bot_and_api
     with mock.patch.object(bot_module.service, "scan", return_value=_scan_result()):
-        bot._handle_update(_msg(t("menu.hot", "en")))
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
     token = api.last_inline()[0][0]["callback_data"].split(":")[-1]
     bot._handle_update(_cb(f"nav:{menu_mod.VIEW_BUY}:y{token}"))
 
@@ -270,7 +287,7 @@ def test_a_bad_amount_is_rejected_without_pricing_anything(bot_and_api, bad):
 def test_amounts_with_a_currency_symbol_or_comma_are_accepted(bot_and_api):
     bot, api = bot_and_api
     with mock.patch.object(bot_module.service, "scan", return_value=_scan_result()):
-        bot._handle_update(_msg(t("menu.hot", "en")))
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
     token = api.last_inline()[0][0]["callback_data"].split(":")[-1]
     bot._handle_update(_cb(f"nav:{menu_mod.VIEW_BUY}:y{token}"))
 
@@ -299,7 +316,7 @@ def test_after_switching_the_list_renders_in_hebrew(bot_and_api):
     bot, api = bot_and_api
     bot._handle_update(_cb(f"nav:{menu_mod.VIEW_LANG}:"))
     with mock.patch.object(bot_module.service, "scan", return_value=_scan_result()):
-        bot._handle_update(_msg(t("menu.hot", "he")))
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
     assert "מחזור" in api.all_text()
 
 
@@ -309,7 +326,7 @@ def test_the_previous_languages_buttons_still_work_after_a_toggle(bot_and_api):
     bot, api = bot_and_api
     bot._handle_update(_cb(f"nav:{menu_mod.VIEW_LANG}:"))
     with mock.patch.object(bot_module.service, "scan", return_value=_scan_result()) as spy:
-        bot._handle_update(_msg(t("menu.hot", "en")))
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
     assert spy.called
 
 
@@ -340,7 +357,7 @@ def test_a_menu_callback_from_a_stranger_is_ignored(bot_and_api):
 def test_a_failing_service_call_reports_instead_of_crashing_the_router(bot_and_api):
     bot, api = bot_and_api
     with mock.patch.object(bot_module.service, "scan", side_effect=RuntimeError("api down")):
-        bot._handle_update(_msg(t("menu.hot", "en")))
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
     assert "api down" in api.all_text()
 
 
@@ -349,11 +366,30 @@ def test_a_service_response_with_ok_false_is_surfaced(bot_and_api):
     with mock.patch.object(
         bot_module.service, "scan", return_value={"ok": False, "error": "rate limited"}
     ):
-        bot._handle_update(_msg(t("menu.hot", "en")))
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
     assert "rate limited" in api.all_text()
 
 
-def test_unprompted_plain_text_re_offers_the_menu(bot_and_api):
+def test_unprompted_plain_text_re_opens_the_dashboard(bot_and_api):
     bot, api = bot_and_api
-    bot._handle_update(_msg("hello?"))
-    assert "keyboard" in (api.sent[-1]["reply_markup"] or {})
+    with mock.patch.object(bot_module.service, "status", return_value={"ok": True, "portfolio": {}}):
+        bot._handle_update(_msg("hello?"))
+    assert "inline_keyboard" in (api.sent[-1]["reply_markup"] or {})
+
+
+def test_a_pasted_market_url_opens_that_market(bot_and_api):
+    # Pasting a link from polymarket.com is unambiguous intent.
+    bot, api = bot_and_api
+    url = "https://polymarket.com/event/ev/will-thing-0-happen"
+    briefing = {"ok": True, "text": "brief", "url": url}
+    with mock.patch.object(bot_module.service, "briefing", return_value=briefing) as spy:
+        bot._handle_update(_msg(url))
+    assert spy.call_args.args[0] == url
+
+
+def test_a_random_sentence_does_not_get_looked_up_as_a_market(bot_and_api):
+    # Guessing wrong sends the owner to an error instead of the menu.
+    bot, api = bot_and_api
+    with mock.patch.object(bot_module.service, "briefing", side_effect=AssertionError("looked up")), \
+         mock.patch.object(bot_module.service, "status", return_value={"ok": True, "portfolio": {}}):
+        bot._handle_update(_msg("what is going on here"))

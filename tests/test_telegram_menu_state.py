@@ -23,10 +23,14 @@ OWNER = 12345
 
 
 class FakeAPI:
+    """Models Telegram's canvas: a send creates a message, an edit replaces it
+    in place. `screens` is the sequence the user actually saw."""
+
     def __init__(self) -> None:
         self.sent: list[dict] = []
         self.edits: list[dict] = []
         self.acks: list[dict] = []
+        self.screens: list[dict] = []
         self._next_id = 100
 
     def get_me(self):
@@ -37,11 +41,15 @@ class FakeAPI:
 
     def send_message(self, chat_id, text, *, reply_markup=None):
         self._next_id += 1
-        self.sent.append({"chat_id": chat_id, "text": text, "reply_markup": reply_markup})
+        entry = {"chat_id": chat_id, "text": text, "reply_markup": reply_markup}
+        self.sent.append(entry)
+        self.screens.append(entry)
         return {"message_id": self._next_id}
 
     def edit_message_text(self, chat_id, message_id, text, *, reply_markup=None):
-        self.edits.append({"text": text})
+        entry = {"text": text, "reply_markup": reply_markup, "message_id": message_id}
+        self.edits.append(entry)
+        self.screens.append(entry)
         return {}
 
     def answer_callback_query(self, callback_query_id, *, text=None, show_alert=False):
@@ -49,20 +57,20 @@ class FakeAPI:
         return {}
 
     def all_text(self) -> str:
-        return "\n".join(s["text"] for s in self.sent)
+        return "\n".join(s["text"] for s in self.screens)
+
+    def last_text(self) -> str:
+        return self.screens[-1]["text"] if self.screens else ""
 
     def markups(self) -> list:
-        return [s["reply_markup"] for s in self.sent if s["reply_markup"]]
+        return [s["reply_markup"] for s in self.screens if s["reply_markup"]]
 
     def last_inline(self) -> list:
-        for entry in reversed(self.sent):
+        for entry in reversed(self.screens):
             markup = entry.get("reply_markup") or {}
             if "inline_keyboard" in markup:
                 return markup["inline_keyboard"]
         return []
-
-    def has_reply_keyboard(self) -> bool:
-        return any("keyboard" in (m or {}) for m in self.markups())
 
 
 @pytest.fixture
@@ -109,37 +117,37 @@ def test_tapping_hot_after_a_search_shows_hot_not_the_old_search(bot_and_api):
     """The bug: session.query survived, so Hot silently returned the previous
     search - titled "Results for <old query>" - and the menu looked broken."""
     bot, api = bot_and_api
-    bot._handle_update(_msg(t("menu.search", "en")))
+    bot._handle_update(_cb(f"nav:{menu_mod.VIEW_SEARCH}:"))
     with mock.patch.object(bot_module.service, "scan", return_value=_scan()):
         bot._handle_update(_msg("ethiopia"))
 
     with mock.patch.object(bot_module.service, "scan", return_value=_scan()) as spy:
-        bot._handle_update(_msg(t("menu.hot", "en")))
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
 
     assert spy.call_args.kwargs["keyword"] is None, "Hot was filtered by the old search"
-    assert "ethiopia" not in api.sent[-1]["text"].lower()
+    assert "ethiopia" not in api.last_text().lower()
 
 
 def test_tapping_search_again_asks_for_a_new_keyword(bot_and_api):
     """The bug: with a query already set, Search re-rendered the old results
     instead of prompting, so a second search was impossible."""
     bot, api = bot_and_api
-    bot._handle_update(_msg(t("menu.search", "en")))
+    bot._handle_update(_cb(f"nav:{menu_mod.VIEW_SEARCH}:"))
     with mock.patch.object(bot_module.service, "scan", return_value=_scan()):
         bot._handle_update(_msg("ethiopia"))
 
-    bot._handle_update(_msg(t("menu.search", "en")))
+    bot._handle_update(_cb(f"nav:{menu_mod.VIEW_SEARCH}:"))
 
     assert bot._sessions.get(OWNER).awaiting == menu_mod.AWAIT_SEARCH
-    assert "keyword" in api.sent[-1]["text"].lower()
+    assert "keyword" in api.last_text().lower()
 
 
 def test_a_second_search_replaces_the_first(bot_and_api):
     bot, api = bot_and_api
-    bot._handle_update(_msg(t("menu.search", "en")))
+    bot._handle_update(_cb(f"nav:{menu_mod.VIEW_SEARCH}:"))
     with mock.patch.object(bot_module.service, "scan", return_value=_scan()):
         bot._handle_update(_msg("ethiopia"))
-    bot._handle_update(_msg(t("menu.search", "en")))
+    bot._handle_update(_cb(f"nav:{menu_mod.VIEW_SEARCH}:"))
     with mock.patch.object(bot_module.service, "scan", return_value=_scan()) as spy:
         bot._handle_update(_msg("bitcoin"))
     assert spy.call_args.kwargs["keyword"] == "bitcoin"
@@ -148,7 +156,7 @@ def test_a_second_search_replaces_the_first(bot_and_api):
 def test_paging_a_search_keeps_the_query(bot_and_api):
     # The query must survive pagination even though it is cleared by Hot.
     bot, api = bot_and_api
-    bot._handle_update(_msg(t("menu.search", "en")))
+    bot._handle_update(_cb(f"nav:{menu_mod.VIEW_SEARCH}:"))
     with mock.patch.object(bot_module.service, "scan", return_value=_scan(count=12)):
         bot._handle_update(_msg("ethiopia"))
     with mock.patch.object(bot_module.service, "scan", return_value=_scan(count=12)) as spy:
@@ -158,7 +166,7 @@ def test_paging_a_search_keeps_the_query(bot_and_api):
 
 def test_going_back_from_a_market_returns_to_the_list_it_came_from(bot_and_api):
     bot, api = bot_and_api
-    bot._handle_update(_msg(t("menu.search", "en")))
+    bot._handle_update(_cb(f"nav:{menu_mod.VIEW_SEARCH}:"))
     with mock.patch.object(bot_module.service, "scan", return_value=_scan()):
         bot._handle_update(_msg("ethiopia"))
     token = _first_market_token(api)
@@ -173,41 +181,73 @@ def test_going_back_from_a_market_returns_to_the_list_it_came_from(bot_and_api):
 
 
 # ---------------------------------------------------------------------------
-# the persistent keyboard must survive a deleted chat / restarted bot
+# the canvas: one message that changes, instead of a growing pile of screens
 # ---------------------------------------------------------------------------
 
 
-def test_the_first_screen_after_a_restart_carries_the_reply_keyboard(bot_and_api):
-    """Deleting the chat clears the reply keyboard on Telegram's side. The
-    first screen rendered afterwards has to put it back, or the menu is simply
-    gone and the only way back is a typed command."""
+def test_navigating_edits_one_message_instead_of_sending_more(bot_and_api):
+    """The point of the rebuild. Tapping through screens must not fill the
+    chat: after the first screen every navigation is an edit."""
+    bot, api = bot_and_api
+    with mock.patch.object(bot_module.service, "scan", return_value=_scan(count=12)), \
+         mock.patch.object(bot_module.service, "status", return_value={"ok": True, "portfolio": {}}):
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOME}:"))
+        sends_after_first = len(api.sent)
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:1"))
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOME}:"))
+
+    assert len(api.sent) == sends_after_first, "navigation sent new messages instead of editing"
+    assert len(api.edits) == 3, f"expected three edits, got {len(api.edits)}"
+
+
+def test_all_navigation_is_inline_so_nothing_is_posted_by_the_user(bot_and_api):
     bot, api = bot_and_api
     with mock.patch.object(bot_module.service, "scan", return_value=_scan()):
         bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
-    assert api.has_reply_keyboard(), "a list screen left the user with no menu"
+    for markup in api.markups():
+        assert "keyboard" not in markup, "a reply keyboard would post the label as a user message"
 
 
-def test_the_keyboard_is_not_resent_on_every_screen(bot_and_api):
-    # Re-sending it constantly makes the chat flicker and adds a message per
-    # tap; once per session is the point.
+def test_re_tapping_the_current_page_does_not_call_telegram(bot_and_api):
+    """Telegram rejects an edit that changes nothing. The page-number button
+    re-renders the page it is already on, so it is answered locally."""
+    bot, api = bot_and_api
+    with mock.patch.object(bot_module.service, "scan", return_value=_scan(count=12)):
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
+        edits_before = len(api.edits)
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
+    assert len(api.edits) == edits_before, "an unchanged screen was pushed to Telegram anyway"
+
+
+def test_typing_starts_a_new_canvas_below_the_typed_message(bot_and_api):
+    """The owner's message lands under the old canvas, so editing upward would
+    put the answer above the question."""
+    bot, api = bot_and_api
+    bot._handle_update(_cb(f"nav:{menu_mod.VIEW_SEARCH}:"))
+    sends_before = len(api.sent)
+    with mock.patch.object(bot_module.service, "scan", return_value=_scan()):
+        bot._handle_update(_msg("ethiopia"))
+    assert len(api.sent) > sends_before, "the reply was edited into a message above the question"
+
+
+def test_a_failed_edit_falls_back_to_a_fresh_canvas(bot_and_api):
+    """Telegram refuses to edit a message older than 48h, and the owner can
+    delete it. Neither should leave the menu unusable."""
     bot, api = bot_and_api
     with mock.patch.object(bot_module.service, "scan", return_value=_scan()):
         bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
-        first = sum(1 for m in api.markups() if "keyboard" in m)
-        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
-        second = sum(1 for m in api.markups() if "keyboard" in m)
-    assert second == first, "the reply keyboard was re-sent on a repeat screen"
+        sends_before = len(api.sent)
+        api.edit_message_text = mock.Mock(side_effect=RuntimeError("message to edit not found"))
+        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:1"))
+    assert len(api.sent) > sends_before, "a dead canvas left the screen stuck"
 
 
-def test_switching_language_repaints_the_keyboard(bot_and_api):
-    # The labels changed, so the old keyboard is now wrong.
+def test_switching_language_redraws_the_current_screen(bot_and_api):
     bot, api = bot_and_api
-    with mock.patch.object(bot_module.service, "scan", return_value=_scan()):
-        bot._handle_update(_cb(f"nav:{menu_mod.VIEW_HOT}:0"))
-    before = sum(1 for m in api.markups() if "keyboard" in m)
     bot._handle_update(_cb(f"nav:{menu_mod.VIEW_LANG}:"))
-    after = sum(1 for m in api.markups() if "keyboard" in m)
-    assert after > before, "the keyboard kept the old language's labels"
+    labels = [b["text"] for row in api.last_inline() for b in row]
+    assert any("עברית" in x or "English" in x for x in labels)
 
 
 # ---------------------------------------------------------------------------

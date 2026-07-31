@@ -43,6 +43,21 @@ _STRINGS: Final[dict[str, dict[str, str]]] = {
     "menu.search": {"en": "🔍 Search", "he": "🔍 חיפוש"},
     "menu.portfolio": {"en": "💼 Portfolio", "he": "💼 תיק"},
     "menu.more": {"en": "⚙️ More", "he": "⚙️ עוד"},
+    # ---- home dashboard --------------------------------------------------
+    "home.title": {"en": "💼 Polymarket", "he": "💼 פולימרקט"},
+    "home.cash": {"en": "Cash        {amount}", "he": "מזומן       {amount}"},
+    "home.value": {"en": "Total       {amount}", "he": "סה\"כ        {amount}"},
+    "home.positions": {"en": "Positions   {count} open", "he": "פוזיציות    {count} פתוחות"},
+    "home.pnl": {"en": "Unrealized  {amount}", "he": "רווח פתוח   {amount}"},
+    "home.rules": {"en": "Exit rules  {count} armed", "he": "כללי יציאה  {count} פעילים"},
+    "home.dry_run": {
+        "en": "⚠️ Monitor is in DRY RUN - exit rules are watched, not executed.",
+        "he": "⚠️ המוניטור בהרצה יבשה - כללי היציאה נצפים, לא מבוצעים.",
+    },
+    "home.hint": {
+        "en": "Pick a destination:",
+        "he": "בחר יעד:",
+    },
     # ---- screen titles ---------------------------------------------------
     "title.hot": {"en": "🔥 Hot markets", "he": "🔥 שווקים חמים"},
     "title.search": {
@@ -85,6 +100,7 @@ _STRINGS: Final[dict[str, dict[str, str]]] = {
     "btn.redeem": {"en": "💰 Redeem", "he": "💰 פדיון"},
     "btn.cancel_orders": {"en": "🚫 Cancel orders", "he": "🚫 בטל הזמנות"},
     "btn.help": {"en": "❓ Help", "he": "❓ עזרה"},
+    "btn.home": {"en": "🏠 Home", "he": "🏠 ראשי"},
     "btn.confirm_yes": {"en": "✅ Yes, do it", "he": "✅ כן, בצע"},
     "btn.confirm_no": {"en": "✖ No, go back", "he": "✖ לא, חזור"},
     # ---- confirmations for irreversible actions --------------------------

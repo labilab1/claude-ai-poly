@@ -47,6 +47,11 @@ SESSION_TTL_SECONDS = 60 * 60
 #: a long-running process is a leak whatever the access rules are.
 MAX_SESSIONS = 32
 
+#: Market tokens kept per session. Enough to page through several screens and
+#: still have earlier buttons work; bounded so browsing does not grow it
+#: forever.
+MAX_REFS = 60
+
 # View names, also used as the `nav:` action segment.
 VIEW_HOME = "home"
 VIEW_HOT = "hot"
@@ -81,25 +86,40 @@ class MenuSession:
     #: Market ref and outcome a pending buy prompt refers to.
     pending_market: str | None = None
     pending_outcome: str | None = None
-    #: Whether this process has painted the reply keyboard for this chat yet.
-    #: Telegram keeps a reply keyboard until it is replaced, but deleting the
-    #: chat clears it - and the bot cannot see that happen. Painting it once
-    #: per session restores it after a delete or a restart without re-sending
-    #: it on every single screen.
-    keyboard_sent: bool = False
+    #: The message this chat's UI lives in. Navigation EDITS this message
+    #: rather than sending a new one, so the whole menu is a single message
+    #: that changes - the chat never fills up with screens, and tapping a
+    #: button posts nothing visible at all.
+    canvas_id: int | None = None
+    #: Last text/keyboard rendered into the canvas. Telegram rejects an edit
+    #: that would not change anything ("message is not modified"), so a repeat
+    #: tap is answered locally instead of by an API error.
+    last_render: tuple[str, str] | None = None
+    #: Where Back should go from the market screen.
+    back_view: str = VIEW_HOME
     touched_at: float = field(default_factory=time.monotonic)
 
     def touch(self) -> None:
         self.touched_at = time.monotonic()
 
     def remember(self, market_ref: str) -> str:
-        """Mint a short token for a market ref and return it.
+        """A short token for a market ref, stable for the life of the session.
 
-        Tokens are per-session and short-lived by design: they only have to
-        survive from rendering a list to tapping a row in it.
+        Stable, not fresh-per-render, for two reasons. Re-rendering a screen
+        must produce an identical keyboard, or the "did anything change?" check
+        in `_render` never matches and every repeat tap pushes a pointless edit
+        to Telegram. And a token from a screen further up the chat keeps
+        working instead of reporting itself expired.
         """
+        for token, ref in self.refs.items():
+            if ref == market_ref:
+                return token
         token = uuid.uuid4().hex[:8]
         self.refs[token] = market_ref
+        # Bounded: a long session browsing many pages would otherwise grow this
+        # forever. Oldest inserted goes first.
+        while len(self.refs) > MAX_REFS:
+            self.refs.pop(next(iter(self.refs)))
         return token
 
     def resolve(self, token: str) -> str | None:
@@ -184,33 +204,62 @@ def parse_nav(token: str) -> tuple[str, str]:
 # --------------------------------------------------------------------------
 
 
-def persistent_keyboard(lang: str) -> dict:
-    """The always-visible bottom keyboard. Sent with every screen."""
+def reply_labels(lang: str) -> dict[str, str]:
+    """Deprecated: the reply keyboard is gone.
+
+    Kept as an empty mapping so any straggling caller degrades to "this text is
+    not a menu button" instead of raising. The menu is inline-only now - see
+    `home_keyboard` for why.
+    """
+    return {}
+
+
+def home_keyboard(lang: str) -> dict:
+    """The dashboard. Every destination is one tap from here.
+
+    Inline, not a reply keyboard: an inline tap fires a callback_query, which
+    posts NOTHING into the chat. A reply keyboard sends the button's label as
+    a message from the user, which fills the conversation with your own words
+    and does not read as an application.
+    """
     return {
-        "keyboard": [
-            [{"text": t("menu.hot", lang)}, {"text": t("menu.search", lang)}],
-            [{"text": t("menu.portfolio", lang)}, {"text": t("menu.more", lang)}],
-        ],
-        "resize_keyboard": True,
-        "is_persistent": True,
+        "inline_keyboard": [
+            [
+                {"text": t("menu.hot", lang), "callback_data": nav(VIEW_HOT, "0")},
+                {"text": t("menu.search", lang), "callback_data": nav(VIEW_SEARCH, "")},
+            ],
+            [
+                {"text": t("menu.portfolio", lang), "callback_data": nav(VIEW_PORTFOLIO, "")},
+                {"text": t("btn.watchlist", lang), "callback_data": nav(VIEW_WATCHLIST, "")},
+            ],
+            [
+                {"text": t("btn.arb", lang), "callback_data": nav(VIEW_ARB, "")},
+                {"text": t("btn.analyze", lang), "callback_data": nav(VIEW_MORE, "analyze")},
+            ],
+            [
+                {"text": t("menu.more", lang), "callback_data": nav(VIEW_MORE, "")},
+                {"text": t("btn.refresh", lang), "callback_data": nav(VIEW_HOME, "")},
+            ],
+        ]
     }
 
 
-def reply_labels(lang: str) -> dict[str, str]:
-    """Map the persistent keyboard's visible text back onto a view.
+def nav_row(lang: str, *, back: str | None = None, extra: list[dict] | None = None) -> list[dict]:
+    """The row every screen ends with, so no screen is ever a dead end."""
+    row: list[dict] = []
+    if back is not None:
+        row.append({"text": t("btn.back", lang), "callback_data": nav(back, "0")})
+    row.extend(extra or [])
+    row.append({"text": t("btn.home", lang), "callback_data": nav(VIEW_HOME, "")})
+    return row
 
-    The buttons send plain text, not callbacks, so the router has to recognise
-    them by label - in whichever language they were rendered in. Both
-    languages are always accepted so a toggle mid-session cannot strand the
-    keyboard already on screen.
-    """
-    mapping: dict[str, str] = {}
-    for language in ("en", "he"):
-        mapping[t("menu.hot", language)] = VIEW_HOT
-        mapping[t("menu.search", language)] = VIEW_SEARCH
-        mapping[t("menu.portfolio", language)] = VIEW_PORTFOLIO
-        mapping[t("menu.more", language)] = VIEW_MORE
-    return mapping
+
+def text_screen_keyboard(lang: str, *, back: str | None = None, refresh: str | None = None) -> dict:
+    """For screens that are just a report: back, optional refresh, home."""
+    extra = []
+    if refresh is not None:
+        extra.append({"text": t("btn.refresh", lang), "callback_data": nav(refresh, "")})
+    return {"inline_keyboard": [nav_row(lang, back=back, extra=extra)]}
 
 
 #: Longest market-button label. Telegram will render more, but a button wider
@@ -261,21 +310,23 @@ def market_rows_keyboard(
         rows.append(row)
 
     if pages > 1:
-        nav_row: list[dict] = []
+        paging: list[dict] = []
         if page > 0:
-            nav_row.append({"text": t("btn.prev", lang), "callback_data": nav(view, str(page - 1))})
-        nav_row.append(
+            paging.append({"text": t("btn.prev", lang), "callback_data": nav(view, str(page - 1))})
+        paging.append(
             {
                 "text": t("list.page", lang, page=page + 1, pages=pages),
-                # A no-op target: the label is information, but Telegram
-                # requires every inline button to carry an action.
+                # Re-rendering the page it is already on. Telegram rejects an
+                # edit that changes nothing, so `_render` answers this locally
+                # rather than letting it surface as an API error.
                 "callback_data": nav(view, str(page)),
             }
         )
         if page + 1 < pages:
-            nav_row.append({"text": t("btn.next", lang), "callback_data": nav(view, str(page + 1))})
-        rows.append(nav_row)
+            paging.append({"text": t("btn.next", lang), "callback_data": nav(view, str(page + 1))})
+        rows.append(paging)
 
+    rows.append(nav_row(lang))
     return {"inline_keyboard": rows}
 
 
@@ -327,7 +378,7 @@ def market_keyboard(
     ]
     if url:
         rows.append([{"text": t("btn.link", lang), "url": url}])
-    rows.append([{"text": t("btn.back", lang), "callback_data": nav(back_view, "0")}])
+    rows.append(nav_row(lang, back=back_view))
     return {"inline_keyboard": rows}
 
 
@@ -382,6 +433,7 @@ def more_keyboard(lang: str) -> dict:
             ],
             # Settings.
             [{"text": t("btn.language", lang), "callback_data": nav(VIEW_LANG, "")}],
+            nav_row(lang),
         ]
     }
 

@@ -24,12 +24,12 @@ from polymarket_bot.telegram.menu import (
     market_keyboard,
     market_rows_keyboard,
     more_keyboard,
+    home_keyboard,
     nav,
     parse_nav,
-    persistent_keyboard,
     render_list,
     render_market_row,
-    reply_labels,
+    text_screen_keyboard,
 )
 
 # A real slug from the live API - 58 characters, which is why slugs cannot
@@ -151,21 +151,39 @@ def test_clear_prompt_drops_every_pending_field():
 # ---------------------------------------------------------------------------
 
 
-def test_persistent_keyboard_has_all_four_entries_in_the_chosen_language():
-    keyboard = persistent_keyboard("he")
-    labels = [b["text"] for row in keyboard["keyboard"] for b in row]
-    assert len(labels) == 4
+def test_the_menu_is_inline_only_so_taps_post_nothing_to_the_chat():
+    """The whole point of the rebuild: a reply keyboard sends the button's
+    label as a message from the user, filling the chat with their own words.
+    An inline tap fires a callback and posts nothing."""
+    for keyboard in (home_keyboard("en"), more_keyboard("en"), text_screen_keyboard("en")):
+        assert "keyboard" not in keyboard, "a reply keyboard would post visible text"
+        assert "inline_keyboard" in keyboard
+
+
+def test_home_reaches_every_major_destination_in_one_tap():
+    payloads = [
+        b.get("callback_data", "") for row in home_keyboard("en")["inline_keyboard"] for b in row
+    ]
+    for view in (menu.VIEW_HOT, menu.VIEW_SEARCH, menu.VIEW_PORTFOLIO,
+                 menu.VIEW_WATCHLIST, menu.VIEW_ARB, menu.VIEW_MORE):
+        assert any(p.startswith(f"nav:{view}:") for p in payloads), f"{view} is not on the home screen"
+
+
+def test_home_renders_in_the_chosen_language():
+    labels = [b["text"] for row in home_keyboard("he")["inline_keyboard"] for b in row]
     assert any("חם" in label for label in labels)
 
 
-def test_reply_labels_accept_both_languages():
-    """A language toggle does not repaint the keyboard already on screen, so
-    the router must still recognise labels in the previous language."""
-    labels = reply_labels("en")
-    from polymarket_bot.telegram.i18n import t
-
-    assert labels[t("menu.hot", "en")] == menu.VIEW_HOT
-    assert labels[t("menu.hot", "he")] == menu.VIEW_HOT
+def test_every_screen_offers_a_way_home():
+    # A screen with no exit is how a menu strands someone.
+    for keyboard in (
+        text_screen_keyboard("en"),
+        more_keyboard("en"),
+        market_keyboard("tok", None, lang="en", back_view=menu.VIEW_HOT),
+        market_rows_keyboard([("t", None, 1, "A")], lang="en", page=0, pages=1, view=menu.VIEW_HOT),
+    ):
+        payloads = [b.get("callback_data", "") for row in keyboard["inline_keyboard"] for b in row]
+        assert any(p.startswith(f"nav:{menu.VIEW_HOME}:") for p in payloads)
 
 
 def test_a_row_without_a_url_gets_no_link_button():
@@ -174,21 +192,29 @@ def test_a_row_without_a_url_gets_no_link_button():
     assert len(buttons) == 1 and "url" not in buttons[0]
 
 
+def _paging_row(keyboard) -> list[str]:
+    """The paging row sits above the Back/Home row that ends every screen."""
+    rows = keyboard["inline_keyboard"]
+    return [b["text"] for b in rows[-2]] if len(rows) >= 2 else []
+
+
 def test_pagination_row_is_absent_on_a_single_page():
     keyboard = market_rows_keyboard([("tok", None, 1, "A market")], lang="en", page=0, pages=1, view=menu.VIEW_HOT)
-    assert len(keyboard["inline_keyboard"]) == 1
+    # One market row + the nav row, and nothing in between.
+    assert len(keyboard["inline_keyboard"]) == 2
+    assert not any("page" in text.lower() for text in _paging_row(keyboard))
 
 
 def test_first_page_has_next_but_no_prev():
     keyboard = market_rows_keyboard([("tok", None, 1, "A market")], lang="en", page=0, pages=3, view=menu.VIEW_HOT)
-    texts = [b["text"] for b in keyboard["inline_keyboard"][-1]]
+    texts = _paging_row(keyboard)
     assert not any("Prev" in x for x in texts)
     assert any("Next" in x for x in texts)
 
 
 def test_last_page_has_prev_but_no_next():
     keyboard = market_rows_keyboard([("tok", None, 1, "A market")], lang="en", page=2, pages=3, view=menu.VIEW_HOT)
-    texts = [b["text"] for b in keyboard["inline_keyboard"][-1]]
+    texts = _paging_row(keyboard)
     assert any("Prev" in x for x in texts)
     assert not any("Next" in x for x in texts)
 

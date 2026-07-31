@@ -146,8 +146,12 @@ def test_a_missing_directory_is_created_on_write(tmp_path):
 
 
 class FakeAPI:
+    """Navigation edits the canvas, so an edit is a screen the user saw -
+    a fake that only records sends misses most of the UI."""
+
     def __init__(self):
         self.sent: list[dict] = []
+        self.screens: list[dict] = []
 
     def get_me(self):
         return {"username": "b"}
@@ -156,20 +160,23 @@ class FakeAPI:
         return []
 
     def send_message(self, chat_id, text, *, reply_markup=None):
-        self.sent.append({"text": text, "reply_markup": reply_markup})
+        entry = {"text": text, "reply_markup": reply_markup}
+        self.sent.append(entry)
+        self.screens.append(entry)
         return {"message_id": len(self.sent)}
 
-    def edit_message_text(self, *a, **k):
+    def edit_message_text(self, chat_id, message_id, text, *, reply_markup=None):
+        self.screens.append({"text": text, "reply_markup": reply_markup})
         return {}
 
     def answer_callback_query(self, *a, **k):
         return {}
 
     def all_text(self):
-        return "\n".join(s["text"] for s in self.sent)
+        return "\n".join(s["text"] for s in self.screens)
 
     def last_inline(self):
-        for entry in reversed(self.sent):
+        for entry in reversed(self.screens):
             markup = entry.get("reply_markup") or {}
             if "inline_keyboard" in markup:
                 return markup["inline_keyboard"]

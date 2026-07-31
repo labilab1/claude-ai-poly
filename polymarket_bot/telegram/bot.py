@@ -23,10 +23,27 @@ Latency: a `SecureClient` is created once and reused for the process lifetime
 a fresh auth handshake on every message - see `client.py`. Updates are
 long-polled (`api.get_updates`), which delivers close to instantly without a
 public HTTPS endpoint.
+
+The UI is a CANVAS: one message per chat that navigation edits in place, never
+a stream of new ones. Two consequences that are the whole reason for it:
+
+  * Every button is INLINE. An inline tap fires a callback_query, which posts
+    nothing into the chat. The first version used a reply keyboard, whose
+    buttons send their own label as a message from the user - so navigating
+    filled the conversation with the owner's own words and never read as an
+    application.
+  * Screens replace each other instead of accumulating. `_render` owns this:
+    it edits `session.canvas_id`, skips the call entirely when nothing would
+    change, and starts a fresh canvas when Telegram refuses the edit (a
+    message older than 48h, or one the owner deleted).
+
+Typed input is the exception. Whatever the owner types lands below the canvas,
+so the reply starts a new one rather than editing a screen further up.
 """
 
 from __future__ import annotations
 
+import json
 import math
 import time
 import uuid
@@ -39,7 +56,12 @@ from polymarket_bot.config import Settings
 from polymarket_bot.notify import ConsoleNotifier, Notifier
 from polymarket_bot.scripts._common import with_disclaimer
 from polymarket_bot.telegram import menu as menu_mod
-from polymarket_bot.telegram.api import TelegramAPI, chunk_message, confirm_keyboard
+from polymarket_bot.telegram.api import (
+    MESSAGE_LIMIT,
+    TelegramAPI,
+    chunk_message,
+    confirm_keyboard,
+)
 from polymarket_bot.telegram.i18n import load_lang, save_lang, t, toggled
 from polymarket_bot.telegram.watchlist import Watchlist
 
@@ -65,6 +87,44 @@ def _int(value: str, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _looks_like_market_ref(text: str) -> bool:
+    """Is this plausibly a market the owner wants opened?
+
+    A pasted polymarket.com URL or a 0x condition id is unambiguous. Anything
+    else - including a bare word that might be a slug - is treated as "no",
+    because guessing wrong sends the owner to an error instead of the menu.
+    """
+    candidate = text.strip()
+    if " " in candidate:
+        return False
+    return candidate.startswith(("http://", "https://")) or (
+        candidate.startswith("0x") and len(candidate) > 40
+    )
+
+
+def _money(value: object) -> str:
+    return f"${float(value):,.2f}" if isinstance(value, (int, float)) else "?"
+
+
+def _signed(value: object) -> str:
+    if not isinstance(value, (int, float)):
+        return "?"
+    # Sign on the outside: "-$0.30" reads faster than "$-0.30".
+    return f"{'+' if value >= 0 else '-'}${abs(float(value)):,.2f}"
+
+
+def _clip_message(text: str) -> str:
+    """An edited message cannot be chunked - it is one message by definition.
+
+    Long reports (analytics, a full arbitrage scan) can exceed Telegram's
+    limit, and an over-long edit is rejected outright, leaving the previous
+    screen on display as though the tap did nothing.
+    """
+    if len(text) <= MESSAGE_LIMIT:
+        return text
+    return text[: MESSAGE_LIMIT - 20].rstrip() + "\n[...truncated]"
 
 
 @dataclass
@@ -99,10 +159,6 @@ class TelegramBot:
         self._running = False
         self._sessions = menu_mod.SessionStore()
         self._watchlist = Watchlist(settings)
-        # Persistent-keyboard buttons arrive as plain text, so the router
-        # recognises them by label - in either language, since a toggle does
-        # not repaint a keyboard already sitting on someone's screen.
-        self._reply_labels = menu_mod.reply_labels("en")
         self._commands = {
             # /start opens the menu; /help still lists the typed commands, which
             # remain the complete, scriptable interface.
@@ -221,13 +277,9 @@ class TelegramBot:
 
         session = self._session(chat_id)
 
-        view = self._reply_labels.get(text)
-        if view is not None:
-            # A keyboard tap always wins over an outstanding prompt: the owner
-            # navigating away is a cancellation of whatever was being asked.
-            session.clear_prompt()
-            self._show_guarded(chat_id, session, view, "")
-            return
+        # Whatever the owner types lands BELOW the canvas, so editing the old
+        # canvas would put the answer above the question. Start a fresh one.
+        session.canvas_id = None
 
         awaiting = session.awaiting
         if awaiting == menu_mod.AWAIT_SEARCH:
@@ -239,34 +291,67 @@ class TelegramBot:
         if awaiting == menu_mod.AWAIT_BUY_AMOUNT:
             self._finish_buy_prompt(chat_id, session, text)
             return
-        # Nothing was expected. Re-show the keyboard rather than ignoring the
-        # owner, who may simply have lost it.
-        self._send(chat_id, t("msg.welcome", session.lang), session)
+
+        # Nothing was expected. A market ref pasted from polymarket.com is a
+        # reasonable guess at intent; anything else just reopens the menu.
+        if _looks_like_market_ref(text):
+            token = session.remember(text)
+            self._show_guarded(chat_id, session, menu_mod.VIEW_MARKET, token)
+            return
+        self._show_guarded(chat_id, session, menu_mod.VIEW_HOME, "")
 
     def _session(self, chat_id: int) -> menu_mod.MenuSession:
         session = self._sessions.get(chat_id, lang=load_lang(self.settings, chat_id))
         return session
 
-    def _send(self, chat_id: int, text: str, session: menu_mod.MenuSession) -> int | None:
-        """Send with the persistent keyboard attached."""
-        session.keyboard_sent = True
-        return self._reply(chat_id, menu_mod.persistent_keyboard(session.lang), text)
+    def _render(
+        self,
+        chat_id: int,
+        session: menu_mod.MenuSession,
+        text: str,
+        keyboard: dict | None = None,
+        *,
+        new_message: bool = False,
+    ) -> None:
+        """Put a screen on the canvas - the one message this chat's UI lives in.
 
-    def _ensure_keyboard(self, chat_id: int, session: menu_mod.MenuSession) -> None:
-        """Paint the reply keyboard once per session.
+        Navigation EDITS that message instead of sending another, which is what
+        makes the menu behave like an application: tapping an inline button
+        fires a callback_query, which posts nothing into the chat, and the
+        screen changes in place. Nothing accumulates.
 
-        Telegram keeps a reply keyboard until it is replaced - but deleting the
-        chat clears it, and the bot has no way to observe that. A screen whose
-        message carries an inline keyboard cannot also carry the reply keyboard
-        (one markup per message), so without this a user who deleted the chat
-        and tapped an old button got a working screen and no menu.
-
-        Once per session, not per screen: re-sending it on every tap adds a
-        message to the chat each time.
+        `new_message` starts a fresh canvas. Used after the owner types
+        something, because their message lands below the old canvas and editing
+        upward would put the answer above the question.
         """
-        if session.keyboard_sent:
+        # Telegram rejects an edit that would change nothing ("message is not
+        # modified"). Tapping the current page number does exactly that, so it
+        # is answered here rather than as an API error.
+        fingerprint = (text, json.dumps(keyboard, sort_keys=True) if keyboard else "")
+        if not new_message and session.canvas_id and session.last_render == fingerprint:
             return
-        self._send(chat_id, t("msg.welcome", session.lang), session)
+
+        if session.canvas_id and not new_message:
+            try:
+                self.api.edit_message_text(
+                    chat_id, session.canvas_id, _clip_message(text), reply_markup=keyboard
+                )
+                session.last_render = fingerprint
+                return
+            except Exception as exc:
+                # An edit fails for reasons that are not bugs: the message is
+                # older than Telegram's 48h edit window, or the owner deleted
+                # it. Fall through and start a new canvas.
+                self._log(f"canvas edit failed, starting a new one: {exc}", "debug")
+
+        message_id = self._reply(chat_id, keyboard, text)
+        if message_id is not None:
+            session.canvas_id = message_id
+            session.last_render = fingerprint
+
+    def _send(self, chat_id: int, text: str, session: menu_mod.MenuSession) -> None:
+        """A screen with only navigation on it (a report, an error, a notice)."""
+        self._render(chat_id, session, text, menu_mod.text_screen_keyboard(session.lang))
 
     def _handle_command(self, message: dict, text: str) -> None:
         chat = message.get("chat") or {}
@@ -409,7 +494,9 @@ class TelegramBot:
         """Render one screen. Every branch ends in a message with the
         persistent keyboard attached, so the menu is never lost."""
         session.view = view
-        if view == menu_mod.VIEW_HOT:
+        if view == menu_mod.VIEW_HOME:
+            self._show_home(chat_id, session)
+        elif view == menu_mod.VIEW_HOT:
             # Hot is unfiltered by definition. Leaving a previous search in
             # place made Hot silently return that search, titled with the old
             # keyword - the single most confusing thing the menu did.
@@ -445,6 +532,45 @@ class TelegramBot:
         else:
             self._send(chat_id, t("msg.welcome", session.lang), session)
 
+    def _show_home(self, chat_id: int, session: menu_mod.MenuSession) -> None:
+        """The dashboard: what the account is worth, and where to go next.
+
+        Reads the account rather than showing a bare menu - the first thing
+        anyone opening a trading bot wants is the balance, and making them tap
+        for it is a wasted screen.
+        """
+        lang = session.lang
+        session.query = None
+        session.clear_prompt()
+
+        lines = [t("home.title", lang), ""]
+        result = service.status(client=self.client)
+        if result.get("ok"):
+            summary = result.get("portfolio") or {}
+            cash = summary.get("cash_usdc")
+            value = summary.get("total_value")
+            open_count = summary.get("open_positions")
+            pnl = summary.get("unrealized_pnl")
+            lines.append(t("home.cash", lang, amount=_money(cash)))
+            lines.append(t("home.value", lang, amount=_money(value)))
+            lines.append(
+                t("home.positions", lang, count=open_count if open_count is not None else "?")
+            )
+            if open_count:
+                lines.append(t("home.pnl", lang, amount=_signed(pnl)))
+            rules = result.get("active_rules")
+            if rules:
+                lines.append(t("home.rules", lang, count=rules))
+            if result.get("monitor_dry_run"):
+                lines.append("")
+                lines.append(t("home.dry_run", lang))
+        else:
+            lines.append(t("msg.error", lang, error=str(result.get("error"))))
+        lines.append("")
+        lines.append(t("home.hint", lang))
+
+        self._render(chat_id, session, "\n".join(lines), menu_mod.home_keyboard(lang))
+
     def _show_arbitrage(self, chat_id: int, session: menu_mod.MenuSession) -> None:
         """Scan for YES+NO pairs priced under the $1 they redeem for.
 
@@ -452,7 +578,6 @@ class TelegramBot:
         told it started before the wait begins.
         """
         lang = session.lang
-        self._ensure_keyboard(chat_id, session)
         self._send(chat_id, t("arb.scanning", lang), session)
 
         result = service.arbitrage(client=self.client)
@@ -549,13 +674,11 @@ class TelegramBot:
 
     def _show_watchlist(self, chat_id: int, session: menu_mod.MenuSession) -> None:
         lang = session.lang
-        self._ensure_keyboard(chat_id, session)
         refs = self._watchlist.list(chat_id)
         if not refs:
             self._send(chat_id, t("msg.watchlist_empty", lang), session)
             return
 
-        session.refs = {}
         entries: list[tuple[str, str | None, int, str]] = []
         lines = [t("title.watchlist", lang), ""]
         for number, ref in enumerate(refs, start=1):
@@ -580,13 +703,12 @@ class TelegramBot:
         keyboard = menu_mod.market_rows_keyboard(
             entries, lang=lang, page=0, pages=1, view=menu_mod.VIEW_WATCHLIST
         )
-        self._reply(chat_id, keyboard, "\n".join(lines).rstrip())
+        self._render(chat_id, session, "\n".join(lines).rstrip(), keyboard)
 
     def _show_list(self, chat_id: int, session: menu_mod.MenuSession, *, sort: str, page: int) -> None:
         lang = session.lang
         # The reply keyboard cannot ride the same message as the inline one, so
         # it is painted first when this session has not painted it yet.
-        self._ensure_keyboard(chat_id, session)
 
         result = service.scan(
             limit=_LIST_FETCH, keyword=session.query, sort=sort, client=self.client
@@ -615,9 +737,10 @@ class TelegramBot:
         )
         session.page = max(0, min(page, pages - 1))
 
-        # Fresh tokens for this page. The refs map is rebuilt rather than
-        # appended to, so it cannot grow without bound over a long session.
-        session.refs = {}
+        # Tokens are stable per market (see MenuSession.remember): re-rendering
+        # the same page must produce an identical keyboard, or the unchanged-
+        # screen check pushes a pointless edit on every repeat tap. The map is
+        # bounded there rather than cleared here.
         first = session.page * menu_mod.PAGE_SIZE
         entries = [
             (
@@ -632,7 +755,7 @@ class TelegramBot:
         keyboard = menu_mod.market_rows_keyboard(
             entries, lang=lang, page=session.page, pages=pages, view=view
         )
-        self._reply(chat_id, keyboard, text)
+        self._render(chat_id, session, text, keyboard)
 
     def _show_market(self, chat_id: int, session: menu_mod.MenuSession, token: str) -> None:
         ref = session.resolve(token)
@@ -645,7 +768,6 @@ class TelegramBot:
             self._show_list(chat_id, session, sort="hot", page=0)
             return
 
-        self._ensure_keyboard(chat_id, session)
         result = service.briefing(ref, client=self.client)
         if not result.get("ok"):
             self._send(
@@ -664,7 +786,7 @@ class TelegramBot:
             no_price=result.get("no_price"),
             watching=self._watchlist.contains(chat_id, ref),
         )
-        self._reply(chat_id, keyboard, text)
+        self._render(chat_id, session, text, keyboard)
 
     #: More-menu actions that only read. Safe to run straight off a tap.
     _READ_ACTIONS = ("status", "rules", "analyze", "monitor", "redeem")
@@ -676,7 +798,7 @@ class TelegramBot:
     def _show_more(self, chat_id: int, session: menu_mod.MenuSession, arg: str) -> None:
         lang = session.lang
         if not arg:
-            self._reply(chat_id, menu_mod.more_keyboard(lang), t("title.more", lang))
+            self._render(chat_id, session, t("title.more", lang), menu_mod.more_keyboard(lang))
             return
 
         # Cancelling every resting order removes any take-profit working on the
@@ -684,10 +806,9 @@ class TelegramBot:
         # irreversible action in this bot asks first; a single tap on a phone,
         # next to read-only buttons, must not be the exception.
         if arg in self._DESTRUCTIVE_ACTIONS:
-            self._reply(
-                chat_id,
+            self._render(
+                chat_id, session, t(f"confirm.{arg}", lang),
                 menu_mod.confirm_action_keyboard(arg, lang=lang),
-                t(f"confirm.{arg}", lang),
             )
             return
 
@@ -722,8 +843,14 @@ class TelegramBot:
             # A preference that could not be written is worth saying out loud:
             # otherwise it silently reverts on restart.
             self._log(f"could not persist language: {type(exc).__name__}: {exc}", "error")
-        self._send(chat_id, t("msg.language_set", session.lang), session)
-        self._reply(chat_id, menu_mod.more_keyboard(session.lang), t("title.more", session.lang))
+        # One screen, not two: the confirmation and the redrawn menu share the
+        # canvas so switching language does not add messages to the chat.
+        self._render(
+            chat_id,
+            session,
+            f"{t('msg.language_set', session.lang)}\n\n{t('title.more', session.lang)}",
+            menu_mod.more_keyboard(session.lang),
+        )
 
     # ---- buying from the menu ---------------------------------------------
     def _start_buy(self, chat_id: int, session: menu_mod.MenuSession, arg: str) -> None:
@@ -823,11 +950,16 @@ class TelegramBot:
 
     # ---- commands ----------------------------------------------------------
     def _cmd_start(self, chat_id: int, args: list[str]) -> None:
-        """Open the menu: welcome text plus the persistent keyboard."""
+        """Open the dashboard on a fresh canvas.
+
+        A typed command lands at the bottom of the chat, so the menu has to
+        follow it there rather than editing a screen further up.
+        """
         session = self._session(chat_id)
         session.clear_prompt()
         session.query = None
-        self._send(chat_id, t("msg.welcome", session.lang), session)
+        session.canvas_id = None
+        self._show_guarded(chat_id, session, menu_mod.VIEW_HOME, "")
 
     def _cmd_arb(self, chat_id: int, args: list[str]) -> None:
         self._show_guarded(chat_id, self._session(chat_id), menu_mod.VIEW_ARB, "")
