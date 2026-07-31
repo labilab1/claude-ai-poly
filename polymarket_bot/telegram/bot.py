@@ -555,8 +555,11 @@ class TelegramBot:
         elif view == menu_mod.VIEW_BUY:
             self._start_buy(chat_id, session, arg)
         elif view == menu_mod.VIEW_PORTFOLIO:
-            result = service.positions(client=self.client)
-            self._send(chat_id, str(result.get("text") or ""), session)
+            self._show_positions(chat_id, session)
+        elif view == menu_mod.VIEW_POSITION:
+            self._show_position(chat_id, session, arg)
+        elif view == menu_mod.VIEW_SELL:
+            self._start_sell(chat_id, session, arg)
         elif view == menu_mod.VIEW_LANG:
             self._toggle_language(chat_id, session)
         elif view == menu_mod.VIEW_ARB:
@@ -614,6 +617,149 @@ class TelegramBot:
         lines.append(t("home.hint", lang))
 
         self._render(chat_id, session, "\n".join(lines), menu_mod.home_keyboard(lang))
+
+    # ---- positions and exits ----------------------------------------------
+    def _position_token(self, session: menu_mod.MenuSession, row: dict) -> str:
+        """A token for a HOLDING, not just a market.
+
+        Selling needs the outcome as well as the market, and a market can be
+        held on both sides at once, so the ref carries both: "<market>|<yes|no>".
+        """
+        ref = str(row.get("slug") or row.get("condition_id") or "")
+        outcome = str(row.get("outcome") or "")
+        return session.remember(f"{ref}|{outcome}")
+
+    @staticmethod
+    def _split_position_ref(ref: str) -> tuple[str, str]:
+        market_ref, _, outcome = ref.partition("|")
+        return (market_ref, outcome or "yes")
+
+    def _show_positions(self, chat_id: int, session: menu_mod.MenuSession) -> None:
+        lang = session.lang
+        # include_resolved: a settled holding is money sitting there waiting to
+        # be redeemed, and hiding it is how it gets forgotten.
+        result = service.positions(include_resolved=True, client=self.client)
+        if not result.get("ok"):
+            self._send(chat_id, t("msg.error", lang, error=str(result.get("error"))), session)
+            return
+
+        rows = list(result.get("positions") or [])
+        if not rows:
+            self._render(
+                chat_id, session, t("pos.empty", lang),
+                menu_mod.text_screen_keyboard(lang, refresh=menu_mod.VIEW_PORTFOLIO),
+            )
+            return
+
+        lines = [t("title.positions", lang), ""]
+        entries: list[tuple[str, int, str, bool]] = []
+        for number, row in enumerate(rows, start=1):
+            resolved = bool(row.get("is_resolved"))
+            lines.append(
+                t(
+                    "pos.row", lang, n=number,
+                    title=str(row.get("market_title") or "")[:60],
+                    outcome=row.get("outcome") or "?",
+                    shares=f"{float(row.get('shares') or 0):,.2f}",
+                    entry=f"{float(row.get('avg_price') or 0) * 100:.1f}",
+                    now=f"{float(row.get('cur_price') or 0) * 100:.1f}",
+                    value=_money(row.get("current_value")),
+                    pnl=_signed(row.get("unrealized_pnl")),
+                    pct=f"{float(row.get('unrealized_pnl_pct') or 0):+.1f}",
+                )
+            )
+            if resolved:
+                lines.append(t("pos.settled", lang))
+            lines.append("")
+            entries.append(
+                (
+                    self._position_token(session, row),
+                    number,
+                    str(row.get("market_title") or ""),
+                    resolved,
+                )
+            )
+
+        lines.append(
+            t("pos.total", lang,
+              value=_money(result.get("total_value")),
+              pnl=_signed(result.get("total_unrealized_pnl")))
+        )
+        lines.append(t("pos.pick", lang))
+        self._render(
+            chat_id, session, "\n".join(lines), menu_mod.positions_keyboard(entries, lang=lang)
+        )
+
+    def _show_position(self, chat_id: int, session: menu_mod.MenuSession, token: str) -> None:
+        """One holding, with its exit buttons."""
+        lang = session.lang
+        ref = session.resolve(token)
+        if ref is None:
+            self._send(chat_id, t("msg.expired", lang), session)
+            self._show_positions(chat_id, session)
+            return
+
+        market_ref, outcome = self._split_position_ref(ref)
+        result = service.positions(include_resolved=True, client=self.client)
+        if not result.get("ok"):
+            self._send(chat_id, t("msg.error", lang, error=str(result.get("error"))), session)
+            return
+
+        # Re-read rather than trusting what was rendered: the position may have
+        # moved, or been closed elsewhere, since the list was drawn.
+        match = None
+        for row in result.get("positions") or []:
+            row_ref = str(row.get("slug") or row.get("condition_id") or "")
+            if row_ref == market_ref and str(row.get("outcome") or "") == outcome:
+                match = row
+                break
+        if match is None:
+            self._send(chat_id, t("msg.position_gone", lang), session)
+            self._show_positions(chat_id, session)
+            return
+
+        resolved = bool(match.get("is_resolved"))
+        lines = [
+            t("title.positions", lang), "",
+            t(
+                "pos.row", lang, n=1,
+                title=str(match.get("market_title") or "")[:70],
+                outcome=match.get("outcome") or "?",
+                shares=f"{float(match.get('shares') or 0):,.2f}",
+                entry=f"{float(match.get('avg_price') or 0) * 100:.1f}",
+                now=f"{float(match.get('cur_price') or 0) * 100:.1f}",
+                value=_money(match.get("current_value")),
+                pnl=_signed(match.get("unrealized_pnl")),
+                pct=f"{float(match.get('unrealized_pnl_pct') or 0):+.1f}",
+            ),
+        ]
+        if resolved:
+            lines.append(t("pos.settled", lang))
+        self._render(
+            chat_id, session, "\n".join(lines),
+            menu_mod.position_keyboard(token, lang=lang, can_sell=not resolved),
+        )
+
+    def _start_sell(self, chat_id: int, session: menu_mod.MenuSession, arg: str) -> None:
+        """Price a sell of part or all of a holding. Sends NOTHING.
+
+        Goes through `service.sell(confirm=False)` exactly as the typed /sell
+        command does, so the owner gets the priced plan and the Confirm/Cancel
+        keyboard. A button is a shortcut to the preview, never to the order.
+        """
+        lang = session.lang
+        code, token = arg[:1], arg[1:]
+        fraction = menu_mod.SELL_SIZES.get(code)
+        ref = session.resolve(token)
+        if fraction is None or ref is None:
+            self._send(chat_id, t("msg.expired", lang), session)
+            return
+
+        market_ref, outcome = self._split_position_ref(ref)
+        result = service.sell(market_ref, outcome, fraction=fraction, client=self.client)
+        self._present_trade_preview(
+            chat_id, action="sell", market_ref=market_ref, outcome=outcome, result=result
+        )
 
     def _show_arbitrage(self, chat_id: int, session: menu_mod.MenuSession) -> None:
         """Scan for YES+NO pairs priced under the $1 they redeem for.

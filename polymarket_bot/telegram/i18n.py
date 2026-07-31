@@ -72,6 +72,32 @@ _STRINGS: Final[dict[str, dict[str, str]]] = {
     "title.more": {"en": "⚙️ More", "he": "⚙️ עוד"},
     "title.market": {"en": "📊 Market", "he": "📊 שוק"},
     "title.watchlist": {"en": "⭐ Watchlist", "he": "⭐ רשימת מעקב"},
+    "title.positions": {"en": "💼 Positions", "he": "💼 פוזיציות"},
+    # ---- positions -------------------------------------------------------
+    "pos.row": {
+        "en": "{n}. {title}\n   {outcome}: {shares} sh @ {entry}¢ → {now}¢\n   Value {value}  ·  P&L {pnl} ({pct}%)",
+        "he": "{n}. {title}\n   {outcome}: {shares} מניות @ {entry}א ← {now}א\n   שווי {value}  ·  רווח {pnl} ({pct}%)",
+    },
+    "pos.settled": {
+        "en": "   ⚠️ SETTLED - redeem it, it cannot be sold.",
+        "he": "   ⚠️ הוכרע - יש לפדות, אי אפשר למכור.",
+    },
+    "pos.empty": {
+        "en": "No open positions.",
+        "he": "אין פוזיציות פתוחות.",
+    },
+    "pos.total": {
+        "en": "Total value {value}  ·  unrealized {pnl}",
+        "he": "שווי כולל {value}  ·  רווח לא ממומש {pnl}",
+    },
+    "pos.pick": {
+        "en": "Tap a position to sell part or all of it.",
+        "he": "לחץ על פוזיציה כדי למכור חלק ממנה או את כולה.",
+    },
+    "pos.selling": {
+        "en": "Pricing a sell of {pct}% ({shares} shares)...",
+        "he": "מתמחר מכירה של {pct}% ({shares} מניות)...",
+    },
     "title.arb": {"en": "⚖️ Arbitrage scan", "he": "⚖️ סריקת ארביטראז'"},
     # ---- market rows -----------------------------------------------------
     "row.yes": {"en": "YES {pct}%", "he": "כן {pct}%"},
@@ -106,6 +132,10 @@ _STRINGS: Final[dict[str, dict[str, str]]] = {
     "btn.help": {"en": "❓ Help", "he": "❓ עזרה"},
     "btn.home": {"en": "🏠 Home", "he": "🏠 ראשי"},
     "btn.settings": {"en": "⚙️ Settings", "he": "⚙️ הגדרות"},
+    "btn.sell_all": {"en": "💵 Sell all", "he": "💵 מכור הכל"},
+    "btn.sell_half": {"en": "Sell 50%", "he": "מכור 50%"},
+    "btn.sell_quarter": {"en": "Sell 25%", "he": "מכור 25%"},
+    "btn.market": {"en": "📊 Market details", "he": "📊 פרטי השוק"},
     "btn.confirm_yes": {"en": "✅ Yes, do it", "he": "✅ כן, בצע"},
     "btn.confirm_no": {"en": "✖ No, go back", "he": "✖ לא, חזור"},
     # ---- confirmations for irreversible actions --------------------------
@@ -153,6 +183,10 @@ _STRINGS: Final[dict[str, dict[str, str]]] = {
     "msg.language_set": {
         "en": "Language set to English.",
         "he": "השפה שונתה לעברית.",
+    },
+    "msg.position_gone": {
+        "en": "That position is no longer open - it may have been sold or settled.",
+        "he": "הפוזיציה כבר לא פתוחה - ייתכן שנמכרה או הוכרעה.",
     },
     "msg.expired": {
         "en": "This menu is out of date - the bot restarted. Tap a button below to start again.",

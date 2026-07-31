@@ -64,6 +64,10 @@ VIEW_BUY = "buy"
 VIEW_ARB = "arb"
 VIEW_WATCH = "watch"
 VIEW_WATCHLIST = "wl"
+#: One held position, with its exits.
+VIEW_POSITION = "pos"
+#: Sell a fraction of a held position. Arg is a size code + token.
+VIEW_SELL = "sell"
 
 # What the bot is waiting for the next plain text message to be.
 AWAIT_SEARCH = "search"
@@ -430,6 +434,53 @@ def confirm_action_keyboard(action: str, *, lang: str) -> dict:
             ]
         ]
     }
+
+
+#: Sell size codes carried in the callback payload. Kept to one character
+#: because the payload also has to hold a market token inside 64 bytes.
+SELL_SIZES: dict[str, float] = {"a": 1.0, "h": 0.5, "q": 0.25}
+
+
+def positions_keyboard(
+    entries: list[tuple[str, int, str, bool]], *, lang: str
+) -> dict:
+    """One button per holding. `entries` is (token, number, title, resolved).
+
+    A settled position gets a Redeem button rather than a Sell one: it can no
+    longer be traded, and offering Sell on it sends the owner into an order
+    that the exchange will refuse.
+    """
+    rows: list[list[dict]] = []
+    for token, number, title, resolved in entries:
+        label = button_label(number, title)
+        target = VIEW_MORE if resolved else VIEW_POSITION
+        arg = "redeem" if resolved else token
+        rows.append([{"text": label, "callback_data": nav(target, arg)}])
+    rows.append(nav_row(lang))
+    return {"inline_keyboard": rows}
+
+
+def position_keyboard(token: str, *, lang: str, can_sell: bool = True) -> dict:
+    """One position: exit some or all of it, or look at the market.
+
+    The sell fractions are fixed buttons rather than a typed amount because
+    exiting is the thing you want to do quickly and without arithmetic. Each
+    still goes through the ordinary preview-then-Confirm flow.
+    """
+    rows: list[list[dict]] = []
+    if can_sell:
+        rows.append(
+            [
+                {"text": t("btn.sell_all", lang), "callback_data": nav(VIEW_SELL, f"a{token}")},
+                {"text": t("btn.sell_half", lang), "callback_data": nav(VIEW_SELL, f"h{token}")},
+            ]
+        )
+        rows.append(
+            [{"text": t("btn.sell_quarter", lang), "callback_data": nav(VIEW_SELL, f"q{token}")}]
+        )
+    rows.append([{"text": t("btn.market", lang), "callback_data": nav(VIEW_MARKET, token)}])
+    rows.append(nav_row(lang, back=VIEW_PORTFOLIO))
+    return {"inline_keyboard": rows}
 
 
 def more_keyboard(lang: str) -> dict:
