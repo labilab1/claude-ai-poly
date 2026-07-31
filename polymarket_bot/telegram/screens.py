@@ -133,24 +133,40 @@ def analytics(response: dict, lang: str) -> str:
         "",
         t("record.trades", lang, count=total,
           wins=s.get("wins", 0), losses=s.get("losses", 0)),
-        t("record.hit_rate", lang, pct=f"{float(s.get('win_rate') or 0):.0f}"),
-        t("record.net", lang, amount=signed(s.get("net_pnl"))),
+        # win_rate is a fraction in 0..1, not a percentage.
+        t("record.hit_rate", lang, pct=f"{float(s.get('win_rate') or 0) * 100:.0f}"),
+        t("record.net", lang, amount=signed(s.get("total_pnl"))),
     ]
-    best, worst = s.get("best_trade"), s.get("worst_trade")
-    if isinstance(best, (int, float)):
-        lines.append(t("record.best", lang, amount=signed(best)))
-    if isinstance(worst, (int, float)):
-        lines.append(t("record.worst", lang, amount=signed(worst)))
+    # best/worst are the position dicts, not bare numbers.
+    for key, label in (("best", "record.best"), ("worst", "record.worst")):
+        entry = s.get(key)
+        if isinstance(entry, dict) and isinstance(entry.get("pnl"), (int, float)):
+            lines.append(t(label, lang, amount=signed(entry["pnl"])))
 
     insights = response.get("insights") or []
     if insights:
         lines.append("")
         lines.append(t("record.insights", lang))
         for item in insights[:4]:
-            headline = str(item.get("headline") or item.get("title") or "").strip()
-            if headline:
-                lines.append(f"• {headline}")
+            lines.append("• " + _insight(item, lang))
     return "\n".join(lines)
+
+
+def _insight(item: dict, lang: str) -> str:
+    """One insight, in the owner's language.
+
+    Rendered from the `code` + `params` analytics attaches, so a Hebrew screen
+    does not fall back to English prose. An unknown code (a new insight added
+    without a translation) degrades to the English headline rather than
+    vanishing - a missing line is worse than a foreign one.
+    """
+    code = str(item.get("code") or "")
+    if code:
+        try:
+            return t(f"insight.{code}", lang, **(item.get("params") or {}))
+        except (KeyError, IndexError):
+            pass
+    return str(item.get("headline") or "").strip()
 
 
 def rules(response: dict, lang: str) -> str:
@@ -251,16 +267,20 @@ def market_analysis(data: dict, lang: str) -> str:
 
     # ---- what trading it costs ----------------------------------------
     lines.append(t("an.cost", lang))
+    cost_lines: list[str] = []
     round_trip = yes.get("round_trip")
     if round_trip is not None:
-        lines.append(t("an.round_trip", lang, amount=cents(round_trip, 2)))
-        lines.append(t("an.break_even", lang, price=cents(yes.get("price"))))
+        cost_lines.append(t("an.round_trip", lang, amount=cents(round_trip, 2)))
+        cost_lines.append(t("an.break_even", lang, price=cents(yes.get("price"))))
     spread = data.get("spread")
     if spread is not None:
-        lines.append(t("an.spread", lang, amount=cents(spread, 2)))
+        cost_lines.append(t("an.spread", lang, amount=cents(spread, 2)))
     pair = data.get("pair_cost")
     if pair is not None:
-        lines.append(t("an.pair", lang, amount=cents(pair)))
+        cost_lines.append(t("an.pair", lang, amount=cents(pair)))
+    # A one-sided book produces none of the above. Saying so beats a heading
+    # with nothing under it, which reads as a broken screen.
+    lines.extend(cost_lines or [t("an.no_cost", lang)])
     lines.append("")
 
     # ---- how much the book can take -----------------------------------
@@ -269,7 +289,8 @@ def market_analysis(data: dict, lang: str) -> str:
         lines.append(t("an.depth", lang, shares=f"{float(depth):,.0f}"))
     volume = data.get("volume_24h")
     if volume:
-        lines.append(t("an.volume", lang, amount=money(volume)))
+        # Whole dollars: cents on a million-dollar figure are noise.
+        lines.append(t("an.volume", lang, amount=f"${float(volume):,.0f}"))
     days = data.get("days_left")
     if days is not None:
         lines.append(

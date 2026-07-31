@@ -250,6 +250,48 @@ _STRINGS: Final[dict[str, dict[str, str]]] = {
     "record.best": {"en": "Best        {amount}", "he": "הטובה ביותר {amount}"},
     "record.worst": {"en": "Worst       {amount}", "he": "הגרועה      {amount}"},
     "record.insights": {"en": "What stands out:", "he": "מה בולט:"},
+    # Insight headlines, rendered from analytics' `code` + `params` rather than
+    # translated from its English prose.
+    "insight.record": {
+        "en": "{count} completed positions, net {net} USDC",
+        "he": "{count} פוזיציות שהושלמו, נטו {net} USDC",
+    },
+    "insight.short_horizon": {
+        "en": "{count} of {total} ({share}%) were 5-minute 'Up or Down' markets — net {net} USDC",
+        "he": "{count} מתוך {total} ({share}%) היו שווקי 'Up or Down' של 5 דקות — נטו {net} USDC",
+    },
+    "insight.unredeemed": {
+        "en": "{count} resolved positions are still unredeemed (~{amount} USDC)",
+        "he": "{count} פוזיציות שהוכרעו עדיין לא נפדו (~{amount} USDC)",
+    },
+    "insight.unredeemed_lost": {
+        "en": "{count} resolved positions sit at about -100% ({amount} USDC of cost basis gone)",
+        "he": "{count} פוזיציות שהוכרעו עומדות על כ-100%- ({amount} USDC של עלות אבדו)",
+    },
+    "insight.concentrated_losses": {
+        "en": "Two markets produced {share}% of all losses ({amount} USDC)",
+        "he": "שני שווקים יצרו {share}% מכל ההפסדים ({amount} USDC)",
+    },
+    "insight.taker_fills": {
+        "en": "{count} of {total} fills were taker fills ({pct}%) — every one paid the spread",
+        "he": "{count} מתוך {total} ביצועים היו taker ({pct}%) — כל אחד שילם את המרווח",
+    },
+    "insight.price_extremes": {
+        "en": "Entries cluster at the price extremes ({detail})",
+        "he": "הכניסות מתרכזות בקצוות המחיר ({detail})",
+    },
+    "insight.best_position": {
+        "en": "Best position: {amount} USDC on '{title}'",
+        "he": "הפוזיציה הטובה ביותר: {amount} USDC ב-'{title}'",
+    },
+    "insight.activity": {
+        "en": "{fills} fills across {markets} markets, {notional} USDC of notional",
+        "he": "{fills} ביצועים ב-{markets} שווקים, {notional} USDC סך הכל",
+    },
+    "insight.no_history": {
+        "en": "No trading history yet.",
+        "he": "אין עדיין היסטוריית מסחר.",
+    },
     # ---- rules -----------------------------------------------------------
     "rules.none": {"en": "No exit rules stored.", "he": "אין כללי יציאה שמורים."},
     "rules.title": {"en": "🎯 Exit rules ({count})", "he": "🎯 כללי יציאה ({count})"},
@@ -303,6 +345,10 @@ _STRINGS: Final[dict[str, dict[str, str]]] = {
         "he": "כלומר צריך להישאר מעל {price} רק כדי לצאת בלי הפסד.",
     },
     "an.spread": {"en": "Spread {amount}", "he": "מרווח {amount}"},
+    "an.no_cost": {
+        "en": "One side has no resting offer, so there is no tradable price to cost out.",
+        "he": "לצד אחד אין הצעה בספר, ולכן אין מחיר סחיר לחשב לפיו.",
+    },
     "an.pair": {
         "en": "YES+NO = {amount} (100¢ is fair; above that is the spread)",
         "he": "כן+לא = {amount} (100 אגורות זה הוגן; מעבר לזה זה המרווח)",

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from itertools import islice
@@ -122,9 +122,21 @@ class Insight:
     headline: str
     detail: str
     severity: Severity = "info"
+    #: Stable identifier for this kind of insight, plus the numbers that went
+    #: into its headline. A front end that speaks another language renders
+    #: `code` + `params` itself rather than trying to translate the English
+    #: prose above - the CLI keeps `headline`/`detail` exactly as they are.
+    code: str = ""
+    params: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        return {"headline": self.headline, "detail": self.detail, "severity": self.severity}
+        return {
+            "headline": self.headline,
+            "detail": self.detail,
+            "severity": self.severity,
+            "code": self.code,
+            "params": dict(self.params),
+        }
 
 
 @dataclass
@@ -496,6 +508,8 @@ def _insight_overall(stats: TradeStats) -> Insight:
         headline=f"{stats.total_trades} completed positions, net {stats.total_pnl:+.2f} USDC",
         detail=detail,
         severity="good" if stats.total_pnl > 0 else "warn",
+        code="record",
+        params={"count": stats.total_trades, "net": round(stats.total_pnl, 2)},
     )
 
 
@@ -511,6 +525,9 @@ def _insight_short_horizon(completed: list[_Result]) -> Insight | None:
             f"{len(short)} of {len(completed)} completed positions ({share:.0f}%) were "
             f"5-minute 'Up or Down' markets — net {pnl:+.2f} USDC"
         ),
+        code="short_horizon",
+        params={"count": len(short), "total": len(completed),
+                "share": round(share), "net": round(pnl, 2)},
         detail=(
             "Those markets are structurally hostile to a taker, for reasons that have "
             "nothing to do with being right: (1) over a five-minute window the price is "
@@ -538,12 +555,17 @@ def _insight_unredeemed(results: list[_Result]) -> Insight | None:
             headline=f"{len(stuck)} resolved positions are still unredeemed",
             detail=f"Redeem them to move ~{basis:.2f} USDC of settled value back to cash.",
             severity="info",
+            code="unredeemed",
+            params={"count": len(stuck), "amount": round(basis, 2)},
         )
     return Insight(
         headline=(
             f"{len(lost)} resolved positions are still sitting in the account, all at "
             f"about -100% ({sum(r.cost_basis for r in lost):.2f} USDC of cost basis gone)"
         ),
+        code="unredeemed_lost",
+        params={"count": len(lost),
+                "amount": round(sum(r.cost_basis for r in lost), 2)},
         detail=(
             "They show as 'redeemable', but they resolved against you: redeeming a losing "
             "outcome token pays 0 USDC. It only clears them out of the position list — it is "
@@ -578,6 +600,8 @@ def _insight_concentration(completed: list[_Result], settings: Settings | None) 
         headline=f"Two markets produced {share:.0f}% of all losses ({top_loss:+.2f} USDC)",
         detail=f"{detail}.{extra} Losses are concentrated, not spread evenly across the book.",
         severity="warn",
+        code="concentrated_losses",
+        params={"share": round(share), "amount": round(top_loss, 2)},
     )
 
 
@@ -600,6 +624,8 @@ def _insight_execution(fills: list[_Fill]) -> Insight | None:
     )
     return Insight(
         headline=f"{len(takers)} of {len(known)} fills were taker fills ({pct:.0f}%)",
+        code="taker_fills",
+        params={"count": len(takers), "total": len(known), "pct": round(pct)},
         detail=(
             "Every taker fill pays the spread. On a 2c spread that is ~4% of a 50c contract "
             "per round trip, before any move in your favour. It also means none of these "
@@ -630,6 +656,8 @@ def _insight_entry_prices(fills: list[_Fill]) -> Insight | None:
         parts.append(f"{len(low)} buys at 0.10 or below (longshots that need a rare event)")
     return Insight(
         headline=f"Entries cluster at the price extremes ({', '.join(parts)})",
+        code="price_extremes",
+        params={"detail": ", ".join(parts)},
         detail=(
             f"Average buy price across {len(buys)} fills was "
             f"{sum(f.notional for f in buys) / sum(f.size for f in buys):.3f}. "
@@ -657,6 +685,8 @@ def _insight_best_result(completed: list[_Result]) -> Insight | None:
     )
     return Insight(
         headline=f"Best completed position: {best.pnl:+.2f} USDC on '{best.title}'",
+        code="best_position",
+        params={"amount": round(best.pnl, 2), "title": best.title},
         detail=(
             f"That single {horizon} market was {comparison} "
             f"(next best {runner:+.2f}, all other winners {others:+.2f} combined). "
@@ -688,6 +718,9 @@ def _insight_activity(fills: list[_Fill]) -> Insight | None:
             f"{len(fills)} fills across {len(markets)} markets{span}, "
             f"{notional:.2f} USDC of total notional"
         ),
+        code="activity",
+        params={"fills": len(fills), "markets": len(markets),
+                "notional": round(notional, 2)},
         detail=(
             f"Average {notional / len(fills):.2f} USDC per fill. Deduped by transaction hash "
             "across both the CLOB account-trade feed and the data-api trade feed, so a fill "
@@ -710,6 +743,7 @@ def get_insights(client: SecureClient, *, settings: Settings | None = None) -> l
     if not completed and not fills:
         return [
             Insight(
+                code="no_history",
                 headline="No trading history yet",
                 detail="No fills and no settled positions on this account, so there is "
                 "nothing to analyse. Stats will appear after the first completed trade.",
