@@ -45,7 +45,10 @@ log "Using $PY ($($PY -V))"
 
 log "Installing packages"
 apt-get update -qq
-apt-get install -y git >/dev/null
+# sudo drops the app process down to a non-root user below. Cloud images that
+# expect you to log in as root directly (rather than an "ubuntu" sudoer
+# account) sometimes skip it entirely, so it's installed rather than assumed.
+apt-get install -y git sudo >/dev/null
 # The venv module ships separately on Debian/Ubuntu. Missing it fails later
 # with "ensurepip is not available", which reads like a Python bug and is not.
 if ! "$PY" -c "import venv, ensurepip" >/dev/null 2>&1; then
@@ -53,6 +56,35 @@ if ! "$PY" -c "import venv, ensurepip" >/dev/null 2>&1; then
     apt-get install -y "${PY}-venv" >/dev/null \
         || die "Could not install ${PY}-venv. Install it manually and re-run."
 fi
+
+# --- firewall ---------------------------------------------------------------
+# Oracle Cloud blocks inbound traffic by default at the network layer; a
+# plain rented VPS (Cloudzy and similar) usually does not - every port is
+# reachable the moment the box boots, wide open until something here closes
+# it. The bot needs zero inbound ports (it long-polls Telegram outbound), so
+# everything except SSH gets denied at the OS firewall regardless of what the
+# provider does upstream.
+log "Configuring firewall (ufw)"
+apt-get install -y ufw >/dev/null
+ufw allow 22/tcp >/dev/null
+ufw default deny incoming >/dev/null
+ufw default allow outgoing >/dev/null
+ufw --force enable >/dev/null
+echo "  ufw: deny incoming (except 22/tcp), allow outgoing"
+
+# --- brute force protection -------------------------------------------------
+# A VPS whose root login arrived as a password in an email gets SSH-scanned
+# within minutes of boot. fail2ban does not replace switching to key-only
+# auth (see deploy/README.md), but it throttles the scanners in the meantime.
+log "Configuring fail2ban"
+apt-get install -y fail2ban >/dev/null
+cat > /etc/fail2ban/jail.local <<'EOF'
+[sshd]
+enabled = true
+EOF
+systemctl enable --now fail2ban >/dev/null
+systemctl reload fail2ban 2>/dev/null || true
+echo "  fail2ban: watching sshd"
 
 # --- user -----------------------------------------------------------------
 # A dedicated, non-login account. If the bot is ever compromised, it gets a

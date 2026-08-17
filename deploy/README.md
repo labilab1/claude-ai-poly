@@ -5,8 +5,10 @@ the point, because **stop-losses only exist while the monitor is running**.
 Polymarket has no native stop orders; a stop-loss lives inside that process and
 nowhere else. A laptop that went to sleep is a position with no protection.
 
-Target here is **Oracle Cloud Always Free** (genuinely free, no time limit) on
-**Ubuntu 24.04**. Any Ubuntu box works the same way.
+Target here is a small **prepaid annual VPS** (e.g. [Cloudzy](https://cloudzy.com/linux-vps/),
+paid via PayPal — no credit card, no recurring auto-charge you didn't
+approve) on **Ubuntu 24.04**. Any Ubuntu box works the same way, this one
+just doesn't need a card.
 
 ---
 
@@ -22,9 +24,11 @@ create a separate wallet for the bot and fund only what you are trading.
 
 Two properties of this setup that limit the damage:
 
-* **No inbound ports.** The bot long-polls Telegram over outbound HTTPS. The
-  server never accepts a connection except your SSH, so there is no service to
-  attack from the internet.
+* **No inbound ports.** The bot long-polls Telegram over outbound HTTPS, so it
+  needs nothing open. `setup.sh` enables `ufw` and denies every incoming
+  connection except SSH — this matters more on a rented VPS than it did on
+  Oracle, since a plain VPS ships with every port reachable until something
+  closes them.
 * **The bot runs as a shell-less system user** with a hardened systemd unit —
   read-only filesystem except its own `data/`, no new privileges, no device
   access.
@@ -33,39 +37,62 @@ Two properties of this setup that limit the damage:
 
 ## 1. Create the server
 
-1. Sign up at <https://cloud.oracle.com> → *Always Free* eligible.
-2. **Compute → Instances → Create Instance.**
-3. Image: **Ubuntu 24.04**.
-4. Shape: **Ampere A1 (ARM)**, 1 OCPU / 6 GB is plenty.
-   *If you get "out of capacity", try a different Availability Domain, or pick
-   `VM.Standard.E2.1.Micro` (AMD) instead — also Always Free, and enough for
-   this.*
-5. **Add SSH keys** → *Generate a key pair for me* → download the private key.
-6. Create. Note the **public IP**.
+1. Go to <https://cloudzy.com/linux-vps/>, pick the smallest plan with
+   **1 GB RAM** (two lightweight Python processes plus a build-time `pip
+   install` is more than the 512 MB tier wants to carry).
+2. Image: **Ubuntu 24.04**.
+3. Pay **annually**, with **PayPal** — no card needed, no silent renewal:
+   PayPal asks you to approve each future charge.
+4. Within a few minutes you get an email with the **public IP** and a
+   **root password**. That password is exactly as sensitive as the wallet
+   key that's coming later — don't paste it into a chat, including this one.
 
-> Oracle's free tier reclaims instances that stay idle for long periods. This
-> bot polls constantly, so it will not look idle.
-
-## 2. Connect
+## 2. Connect, then immediately stop using a password
 
 ```bash
-chmod 600 ~/Downloads/ssh-key-*.key
-ssh -i ~/Downloads/ssh-key-*.key ubuntu@YOUR_SERVER_IP
+ssh root@YOUR_SERVER_IP
+# paste the password from the email when prompted
 ```
 
-On Windows, use the same command in PowerShell or Git Bash.
+On Windows, the same command works in PowerShell or Git Bash.
+
+A freshly rented VPS gets SSH login attempts from bots within minutes of
+booting — the IP was reachable before you even finished reading the email.
+`setup.sh` (next step) installs `fail2ban` to slow that down, but the actual
+fix is to stop accepting a password at all:
+
+```bash
+# on YOUR OWN machine, only if you don't already have a key:
+ssh-keygen -t ed25519 -C polymarket-bot
+
+# copy it to the server (still logged in with the password once for this):
+ssh-copy-id root@YOUR_SERVER_IP
+
+# test the key works BEFORE closing this session:
+ssh root@YOUR_SERVER_IP   # should no longer ask for a password
+
+# only then, on the server, turn password login off:
+sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+sudo systemctl restart ssh
+```
+
+Keep the password-login session open until the key-based one is confirmed
+working — if you disable password auth before the key is copied correctly,
+you lock yourself out with no way back in except the provider's web console.
 
 ## 3. Install
 
 ```bash
-sudo apt update && sudo apt install -y git
+apt update && apt install -y git
 git clone -b claude/new-session-er72vo https://github.com/labilab1/claude-ai-poly.git /tmp/pm
-sudo bash /tmp/pm/deploy/setup.sh
+bash /tmp/pm/deploy/setup.sh
 ```
 
-The script installs Python 3.11+, creates the `polymarket` user, clones into
+The script installs Python 3.11+, locks down the firewall (`ufw`, SSH only),
+enables `fail2ban`, creates the `polymarket` user, clones into
 `/opt/polymarket`, builds a virtualenv, and installs the systemd units. It is
-safe to re-run.
+safe to re-run — re-running after the SSH hardening above is fine, it doesn't
+touch `sshd_config`.
 
 ## 4. Put your credentials on the server
 
