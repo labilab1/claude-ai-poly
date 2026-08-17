@@ -1,0 +1,15 @@
+# This repo is edited on Windows and deployed to Linux.
+#
+# Anything the server executes must arrive with LF endings. A shell script
+# checked out with CRLF fails as `bash: $'\r': command not found`, and a
+# systemd unit with CRLF fails to parse - both at deploy time, on a machine
+# you are SSH'd into, which is the worst place to debug a line ending.
+*.sh            text eol=lf
+*.service       text eol=lf
+*.py            text eol=lf
+
+# Normalise the rest, but leave the working tree to the platform.
+*.md            text
+*.txt           text
+*.json          text
+*.example       text
