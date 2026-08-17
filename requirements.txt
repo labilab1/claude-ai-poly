@@ -1,2 +1,8 @@
 polymarket-client>=0.2.0
 python-dotenv>=1.0.0
+
+# Imported directly, not just pulled in by the SDK: telegram/api.py uses
+# requests, and scripts/wallet_status.py uses both. Declaring them means a
+# fresh server install cannot break because a transitive dependency moved.
+requests>=2.31.0
+eth-account>=0.13.0

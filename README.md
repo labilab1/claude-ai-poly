@@ -504,6 +504,18 @@ worth knowing:
 
 ### Running without a computer left on
 
+**A ready-made deployment lives in [`deploy/`](deploy/README.md)** — systemd
+units for both processes, a re-runnable `setup.sh`, an `update.sh` that refuses
+to restart into failing tests, and a walkthrough targeting Oracle Cloud's
+Always Free tier. Two properties worth knowing before you read it:
+
+* **No inbound ports.** The bot long-polls Telegram over outbound HTTPS, so the
+  server accepts nothing from the internet except your SSH.
+* **The monitor ships in dry run.** Arming it to actually sell is a deliberate
+  one-line edit, documented at the top of its unit file.
+
+
+
 Stop-loss and trailing-stop rules are enforced only while `monitor` is an
 actually-running process — see
 [Polymarket has no native stop orders](#polymarket-has-no-native-stop-orders).

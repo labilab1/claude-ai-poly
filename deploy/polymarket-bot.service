@@ -1,0 +1,64 @@
+# The Telegram bot: answers the menu, previews and (after Confirm) places orders.
+#
+# Install:  sudo cp deploy/polymarket-bot.service /etc/systemd/system/
+#           sudo systemctl daemon-reload
+#           sudo systemctl enable --now polymarket-bot
+# Logs:     journalctl -u polymarket-bot -f
+#
+# No inbound ports are needed. The bot long-polls Telegram over outbound HTTPS,
+# so the server can refuse every incoming connection except your SSH.
+
+[Unit]
+Description=Polymarket Telegram bot
+Documentation=https://github.com/labilab1/claude-ai-poly
+After=network-online.target
+Wants=network-online.target
+# Crash-loop guard. These belong in [Unit]: systemd moved them out of
+# [Service] in v230, and left there they are silently ignored.
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+[Service]
+Type=simple
+User=polymarket
+Group=polymarket
+WorkingDirectory=/opt/polymarket
+ExecStart=/opt/polymarket/venv/bin/python -m polymarket_bot.scripts.telegram_bot
+
+# The bot refuses to start if another copy holds the lock (telegram/singleton.py).
+# Restart=always would then spin against a lock it can never take, so failures
+# are retried on a delay rather than immediately.
+Restart=always
+RestartSec=10
+
+# Unbuffered, so journalctl shows output as it happens rather than in blocks.
+Environment=PYTHONUNBUFFERED=1
+# ProtectSystem=strict makes the tree read-only, so bytecode caching
+# would fail on every import. Disable it rather than retry it.
+Environment=PYTHONDONTWRITEBYTECODE=1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=polymarket-bot
+
+# --- hardening ---------------------------------------------------------
+# This process holds a key that can spend money. Give it as little of the
+# machine as it can run with.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# ProtectSystem=strict makes everything read-only; the data directory is the
+# one place this service is allowed to write (rules, monitor state, prefs).
+ReadWritePaths=/opt/polymarket/data
+RestrictAddressFamilies=AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
