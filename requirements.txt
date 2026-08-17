@@ -6,3 +6,7 @@ python-dotenv>=1.0.0
 # fresh server install cannot break because a transitive dependency moved.
 requests>=2.31.0
 eth-account>=0.13.0
+
+# deploy/update.sh refuses to restart the services if the test suite fails -
+# that gate only works if pytest is actually installed on the server.
+pytest>=8.0.0
